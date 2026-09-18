@@ -373,6 +373,17 @@ export interface AuthUser {
    * 宁可让管理员一时看不到入口，也不能让普通人看见一个自己进不去的入口。
    */
   role?: string;
+  /**
+   * 邮箱验证过了没有。
+   *
+   * 写成可选而不是必填，理由和 role 一样：这个字段是后端这一轮才加的，
+   * 前后端可能不是同时上线。取不到就当「没验证」——
+   * 那只是让界面少显示一句提示，不会把人拦在外面。
+   *
+   * 它只是展示。能不能走「忘记密码」由后端判，
+   * 前端把入口藏起来不算数（藏起来照样能被直接调接口）。
+   */
+  emailVerified?: boolean;
 }
 
 /**
@@ -426,6 +437,38 @@ export const changePassword = (oldPassword: string, newPassword: string) =>
   request<void>("/auth/password", {
     method: "POST",
     body: JSON.stringify({ oldPassword, newPassword }),
+  });
+
+/*
+ * 申请一封重置密码的邮件。
+ *
+ * 后端对这个接口**无论邮箱存不存在都返回同一句话**，
+ * 所以这里不要根据返回值去判断「到底发出去没有」——
+ * 判断不出来是它故意的（否则这个接口就是一台「谁注册过拾链」的查询机）。
+ * 界面上文案也必须跟着一致，别说「如果邮箱已注册，我们会发一封」。
+ */
+export const requestPasswordReset = (email: string) =>
+  request<{ ok: boolean }>("/auth/forgot", {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  });
+
+/** 用邮件里的令牌设置新密码。 */
+export const resetPassword = (token: string, newPassword: string) =>
+  request<{ ok: boolean }>("/auth/reset", {
+    method: "POST",
+    body: JSON.stringify({ token, newPassword }),
+  });
+
+/** 给当前账号发一封验证邮件。已经验证过时后端什么也不做，照样成功。 */
+export const sendEmailVerification = () =>
+  request<{ ok: boolean }>("/auth/verify/send", { method: "POST" });
+
+/** 确认验证链接。 */
+export const confirmEmailVerification = (token: string) =>
+  request<{ ok: boolean }>("/auth/verify/confirm", {
+    method: "POST",
+    body: JSON.stringify({ token }),
   });
 
 /* ────────────── 标签（R-05） ────────────── */

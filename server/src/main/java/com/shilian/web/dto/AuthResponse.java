@@ -24,10 +24,18 @@ public record AuthResponse(
          * <p>它是<b>只读展示</b>，不是权限判据：真正的校验在
          * {@code /api/admin/**} 那一层（非管理员返回 404）。
          */
-        String role
+        String role,
+        /**
+         * 邮箱验证过了没有。
+         *
+         * <p>前端靠它决定要不要显示「去验证一下邮箱」的提示。
+         * 和 role 一样，它只是展示——能不能走忘记密码由后端判，
+         * 前端藏起入口不算数。
+         */
+        boolean emailVerified
 ) {
     public static AuthResponse of(User u) {
         return new AuthResponse(u.id(), u.username(), u.nickname(), u.email(),
-                u.displayName(), u.roleOrDefault());
+                u.displayName(), u.roleOrDefault(), u.emailVerified());
     }
 }

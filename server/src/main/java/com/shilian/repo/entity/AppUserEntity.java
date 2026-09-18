@@ -41,6 +41,24 @@ public class AppUserEntity {
     private String createdAt;
     private String lastLoginAt;
 
+    /*
+     * 邮箱验证过了没有。V3 迁移加进来的列，默认 0。
+     *
+     * 用 Boolean 而不是 boolean：MyBatis 遇到库里的 NULL（老库升上来的脏数据）
+     * 时，基本类型会拿到 false 且不说一句；包装类型至少是 null，
+     * 让「没值」和「值为否」是两种能区分的状态。
+     * 对外一律走 User.emailVerified()，那个是基本类型，调用方不必判空。
+     */
+    private Boolean emailVerified;
+
+    public Boolean getEmailVerified() {
+        return emailVerified;
+    }
+
+    public void setEmailVerified(Boolean emailVerified) {
+        this.emailVerified = emailVerified;
+    }
+
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
 

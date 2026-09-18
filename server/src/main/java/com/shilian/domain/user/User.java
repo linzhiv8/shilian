@@ -26,7 +26,17 @@ public record User(
          * 但读出来的行理论上仍可能是 NULL（老库升上来时的脏数据），
          * 判断一律走 {@link #isAdmin()}，别直接比字符串。
          */
-        String role
+        String role,
+        /**
+         * 邮箱验证过了没有。
+         *
+         * <p><b>它只卡一件事</b>：没验证过就不能走「忘记密码」自助重置。
+         * 除此之外不拦任何功能——验证是可选的，不是门槛。
+         * 理由：重置邮件发到一个我们没确认过的地址上，
+         * 等于把账号的控制权交给任何一个填了这个邮箱的人；
+         * 而反过来，为了「逼」用户验证而拦住正常使用，是个人的产品不该干的事。
+         */
+        boolean emailVerified
 ) {
     public static final String STATUS_ACTIVE = "active";
     public static final String STATUS_DISABLED = "disabled";

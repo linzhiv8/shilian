@@ -108,7 +108,17 @@ public class SecurityConfig {
                          * 哪天有人在 /api/auth/ 下加一个不查用户的接口，
                          * 这个口子就悄悄开在那了。
                          */
-                        .requestMatchers("/api/auth/register", "/api/auth/login").permitAll()
+                        /*
+                         * forgot / reset 也必须匿名可访问——
+                         * 走这两个接口的人**恰恰是登不进去的那个人**，
+                         * 要登录才能找回密码是个死循环。
+                         *
+                         * 而 verify/send 和 verify/confirm 不在这里：
+                         * 它们都要求已登录（confirm 还要令牌属于本人，
+                         * 见 EmailController 上的注释），所以走下面的 authenticated()。
+                         */
+                        .requestMatchers("/api/auth/register", "/api/auth/login",
+                                "/api/auth/forgot", "/api/auth/reset").permitAll()
                         // 前端启动自检要用
                         .requestMatchers("/api/health", "/api/meta").permitAll()
                         .anyRequest().authenticated())

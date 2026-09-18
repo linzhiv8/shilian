@@ -6,6 +6,7 @@ import SavePanel from "./components/SavePanel";
 import ReviewView from "./components/ReviewView";
 import WeeklyView from "./components/WeeklyView";
 import AdminView from "./components/AdminView";
+import { ResetView, VerifyView } from "./components/MailLinkView";
 import TagManager from "./components/TagManager";
 import AuthView from "./components/AuthView";
 import {
@@ -42,7 +43,13 @@ function checkMetaConsistency(meta: Meta) {
   }
 }
 
-type View = "list" | "review" | "weekly" | "admin";
+/*
+ * reset / verify 这两个视图和前面几个不一样：
+ * list/review/weekly/admin 都是点出来的，而这两个是**从邮件链接点进来的**——
+ * 用户此时手上只有一个带 token 的网址，没有「先登录再点某个按钮」这条路径。
+ * 所以它们必须由地址栏驱动，见下面读 URL 的那个 effect。
+ */
+type View = "list" | "review" | "weekly" | "admin" | "reset" | "verify";
 
 export default function App() {
   const [links, setLinks] = useState<LinkItem[]>([]);
@@ -72,6 +79,16 @@ export default function App() {
    */
   const [view, setView] = useState<View>("list");
   const [reviewCount, setReviewCount] = useState(0);
+
+  /**
+   * 邮件链接带进来的令牌。
+   *
+   * 单独存一个 state 而不是让重置页自己去读地址栏：
+   * 读完我们会立刻把地址栏抹掉（见下面那个 effect），
+   * 而页面之后还要用这个令牌调接口——抹掉之后再读就只剩 null 了，
+   * 于是用户看到「链接失效」，可他明明刚点开。
+   */
+  const [mailToken, setMailToken] = useState<string | null>(null);
 
   const [query, setQuery] = useState("");
   const [semantic, setSemantic] = useState(false);
@@ -271,6 +288,35 @@ export default function App() {
    *
    * 用完立刻把参数从地址栏抹掉，否则刷新会重复触发分析（白花一次 token）。
    */
+  /**
+   * 邮件里的链接：`/reset?token=...` 和 `/verify?token=...`。
+   *
+   * 这两个是**真实网址**，不是内部 state 切换——用户从邮箱点开就是直接命中它，
+   * 中间没有「先打开拾链再点某个按钮」这一步。所以只能在这里认。
+   *
+   * <p>工程没有路由库，这是刻意的：整个应用只有四个视图，
+   * 为一个 state 切换引入 router、history 抽象和一堆路由配置不值当。
+   * 代价就是这两个从外面进来的链接得手写一次识别——就这几行，可以接受。
+   *
+   * <p><b>认完立刻抹掉地址栏。</b>
+   * 不抹的话刷新会拿同一个 token 再跑一遍，而令牌是用后即废的，
+   * 于是第二次必定「链接失效」。用户看来就是：我明明刚点开，刷新一下就坏了。
+   */
+  useEffect(() => {
+    const token = new URLSearchParams(window.location.search).get("token");
+    if (!token) return;
+    const path = window.location.pathname.replace(/\/+$/, "");
+    if (path === "/reset" || path === "/verify") {
+      setMailToken(token);
+      setView(path === "/reset" ? "reset" : "verify");
+      // replaceState 而不是 pushState：多一条历史记录的话，
+      // 用户按返回键会回到那个还带着 token 的网址，等于又触发一次。
+      window.history.replaceState({}, "", "/");
+    }
+    // 只在首次挂载时跑一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     const u = new URLSearchParams(window.location.search).get("url");
     if (!u) return;
@@ -671,6 +717,25 @@ export default function App() {
     return <div className="h-full w-full bg-canvas" />;
   }
 
+  /*
+   * 重置密码必须能在**没登录**的时候打开。
+   *
+   * 这条分支要放在下面那个「未登录就只给登录页」之前，
+   * 否则整条路径是死的：走「忘记密码」的人**恰恰是登不进去的那个人**，
+   * 先要求他登录才能改密码，是一个他永远走不出去的环。
+   */
+  if (view === "reset") {
+    return (
+      <ResetView
+        token={mailToken}
+        onDone={() => {
+          setMailToken(null);
+          setView("list");
+        }}
+      />
+    );
+  }
+
   /* ── 未登录：只给登录页，不加载任何数据 ── */
   if (!user) {
     return (
@@ -700,6 +765,27 @@ export default function App() {
           </button>
         </div>
       </div>
+    );
+  }
+
+  /*
+   * 验证邮箱必须已登录（后端要求令牌属于当前登录的人）。
+   *
+   * 做成整屏而不是塞进主布局：这是「从邮件点进来」的一个瞬间，
+   * 不是使用拾链的过程——上面顶着录入框和筛选行，
+   * 只会让人以为要先去干点什么才能验证完。
+   */
+  if (view === "verify") {
+    return (
+      <VerifyView
+        token={mailToken}
+        onDone={() => {
+          setMailToken(null);
+          setView("list");
+        }}
+        notify={notify}
+        onUserChange={setUser}
+      />
     );
   }
 

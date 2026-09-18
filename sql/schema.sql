@@ -103,6 +103,11 @@ CREATE TABLE IF NOT EXISTS app_user (
   id              VARCHAR(32)  NOT NULL,
   username        VARCHAR(190) NOT NULL,
   email           VARCHAR(190) NULL,
+  -- 邮箱有没有验证过。0/1。
+  -- 验证不强制（没验证照样能用拾链），但**没验证就不能走忘记密码自助重置**——
+  -- 否则重置邮件会发到一个我们没确认过的地址，等于把账号交给任何填了这个邮箱的人。
+  -- 存量账号一律 0，别反过来填 1：那会让所有老账号「假装已验证」，把这条保护架空。
+  email_verified  TINYINT      NOT NULL DEFAULT 0,
   -- bcrypt 结果是固定 60 字符，但别卡死：将来换 Argon2 长度会变
   password_hash   VARCHAR(255) NULL,
   nickname        VARCHAR(64)  NULL,
@@ -299,4 +304,33 @@ CREATE TABLE IF NOT EXISTS link_embedding (
   KEY idx_link_embedding_model (model),
   CONSTRAINT fk_link_embedding_link
     FOREIGN KEY (link_id) REFERENCES link (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+/* ────────────── 邮箱一次性令牌 ────────────── */
+
+-- 「找回密码」和「验证邮箱」共用的令牌表。
+--
+-- ⚠ token_hash 存的是 **SHA-256 哈希**，不是令牌本身。这是这张表最重要的一个决定：
+--   令牌会出现在两个地方——邮件正文（会被转发、会留在收件箱里）和数据库。
+--   数据库泄露（备份外流、注入）如果等于「能重置任何人的密码」，
+--   那一次泄露就是一次全站接管。存哈希之后，光拿到库造不出可用的链接。
+-- 代价是没办法「把同一条链接再发一遍」，只能重新生成一个——完全可以接受。
+--
+-- email 是快照而不是外键引用：发信那一刻的地址。用户之后改了邮箱的话，
+-- 旧令牌指向的仍然是当时那个地址，这才是「这封信发给了谁」的真实记录。
+--
+-- 不加外键：令牌过期后会被清掉，而它们本来也不该挂在 app_user 的生命期上。
+CREATE TABLE IF NOT EXISTS email_token (
+  id          BIGINT       NOT NULL AUTO_INCREMENT,
+  user_id     VARCHAR(32)  NOT NULL,
+  email       VARCHAR(190) NOT NULL,
+  purpose     VARCHAR(16)  NOT NULL,  -- 'reset' | 'verify'
+  token_hash  VARCHAR(64)  NOT NULL,
+  expires_at  VARCHAR(19)  NOT NULL,
+  used_at     VARCHAR(19)  NULL,      -- 非 null = 已用过，用后即废
+  created_at  VARCHAR(19)  NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_email_token_hash (token_hash),
+  KEY idx_email_token_user (user_id, purpose),
+  KEY idx_email_token_exp (expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

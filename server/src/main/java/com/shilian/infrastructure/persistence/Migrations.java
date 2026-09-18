@@ -79,7 +79,15 @@ public class Migrations {
      */
     private static final List<Migration> MIGRATIONS = List.of(
             new Migration(1, "baseline", "db/V1__baseline.sql", false),
-            new Migration(2, "admin", "db/V2__admin.sql", false)
+            new Migration(2, "admin", "db/V2__admin.sql", false),
+            /*
+             * V3 是邮箱验证 + 找回密码（批次 4 剩下的 R-08 / R-18）。
+             *
+             * 它紧跟在 V2 后面，因为库里现在就是 2——版本号必须等于「库里实际的
+             * 下一个版本」，不能照需求文档预留。文档里批次 3 的脚本将来是 V4，
+             * 那时候它排在 V3 之后照常执行，本条留在 V3 不动。
+             */
+            new Migration(3, "email", "db/V3__email.sql", false)
     );
 
     private final JdbcTemplate jdbc;

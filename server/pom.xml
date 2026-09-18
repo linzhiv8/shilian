@@ -89,6 +89,22 @@
       <version>${jsoup.version}</version>
     </dependency>
 
+    <!--
+        发信（忘记密码重置 / 邮箱验证）。
+
+        为什么用 starter-mail（SMTP）而不是接一个 HTTP 邮件 API：
+        用户已经指定走网易邮箱，而网易给个人用户的只有 SMTP 这一条路，
+        它的 HTTP 发信 API 是企业邮件推送服务才有的。
+
+        ⚠ 走 465 而不是 25：阿里云 ECS 默认封禁 25 端口的出方向，
+        在 25 上发信的表现是连接超时，而且本地开发机上往往又是通的——
+        「本地能发、线上发不出」这种差异极难往回查。所以端口写死在配置里用 465。
+    -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-mail</artifactId>
+    </dependency>
+
   </dependencies>
 
   <build>

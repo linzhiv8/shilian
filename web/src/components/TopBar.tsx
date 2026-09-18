@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import {
-  ApiError, changePassword, downloadExport,
+  ApiError, changePassword, downloadExport, sendEmailVerification,
   type AuthUser, type ExportFormat, type TagItem,
 } from "../api";
 import {
@@ -521,7 +521,27 @@ function UserMenu({
   const [newPw, setNewPw] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [verifyBusy, setVerifyBusy] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * 发一封验证邮件。
+   *
+   * <p>不做「已发送，60 秒后可重发」的倒计时：后端已经按人限流了（一小时 5 次），
+   * 前端再做一个倒计时就是同一条规则实现两遍，而且两边迟早对不上。
+   * 真被限住了，后端那句「请 N 秒后再试」会原样显示出来。
+   */
+  const sendVerify = async () => {
+    setVerifyBusy(true);
+    try {
+      await sendEmailVerification();
+      notify("验证邮件发出去了，去看邮箱");
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "没发出去，稍后再试", "warn");
+    } finally {
+      setVerifyBusy(false);
+    }
+  };
 
   /** 点面板外面就收起来。不然它要一直挂着，挡住下面的内容。 */
   useEffect(() => {
@@ -574,6 +594,29 @@ function UserMenu({
         <div className="absolute right-0 top-full z-30 mt-1.5 w-[252px] rounded-lg border border-line bg-surface p-3 shadow-[0_12px_32px_-12px_rgba(0,0,0,0.22)]">
           <p className="text-[12.5px] font-medium text-ink">{user.displayName}</p>
           <p className="mt-0.5 text-[11px] text-ink3">@{user.username}</p>
+
+          {/*
+            没验证邮箱时给一条提示 + 一个发送按钮。
+            验证过了就什么都不显示——不用一个绿色「已验证」去占用这个 252px 的面板，
+            好事不需要报备，只有「还没做」才需要提醒。
+
+            说清「不验证也能用」，否则这句话看起来像一条没完成的任务，
+            而它其实是个可选项。
+          */}
+          {user.email && !user.emailVerified && (
+            <div className="mt-2.5 rounded-md border border-line bg-sunken px-2.5 py-2">
+              <p className="text-[11px] leading-relaxed text-ink2">
+                邮箱还没验证。不验证也能正常用，只是没法用它找回密码。
+              </p>
+              <button
+                onClick={() => void sendVerify()}
+                disabled={verifyBusy}
+                className="mt-1.5 text-[11.5px] text-accent transition-opacity hover:opacity-80 disabled:opacity-50"
+              >
+                {verifyBusy ? "发着…" : "发一封验证邮件"}
+              </button>
+            </div>
+          )}
 
           {!changing ? (
             <div className="mt-3 flex flex-col gap-1">

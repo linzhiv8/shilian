@@ -147,6 +147,19 @@ public class UserRepository {
         return users.updateStatus(userId, status);
     }
 
+    /** 按邮箱精确查。只给「忘记密码」用，理由见 Mapper 上的注释。 */
+    public Optional<User> findByEmail(String email) {
+        if (email == null || email.isBlank()) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(users.findByEmail(email.trim())).map(UserRepository::toUser);
+    }
+
+    /** 标记邮箱验证结果。 */
+    public int updateEmailVerified(String userId, boolean verified) {
+        return users.updateEmailVerified(userId, verified);
+    }
+
     /** 供 ApplicationRunner 用：判断要不要初始化首个账号。 */
     public boolean isEmpty() {
         return countAll() == 0;
@@ -171,7 +184,10 @@ public class UserRepository {
                 e.getLockedUntil(),
                 e.getCreatedAt(),
                 e.getLastLoginAt(),
-                e.getRole());
+                e.getRole(),
+                // null → false：没验证过。用 Boolean.TRUE.equals 而不是拆箱，
+                // 库里的 NULL（老库升上来的脏数据）在这里必须被当成「没验证」而不是抛 NPE。
+                Boolean.TRUE.equals(e.getEmailVerified()));
     }
 
     /** 12 位十六进制，和 link 的 id 同一套格式。 */

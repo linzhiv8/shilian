@@ -177,4 +177,20 @@ public interface AppUserMapper extends BaseMapper<AppUserEntity> {
      */
     @Update("UPDATE app_user SET password_hash = #{hash} WHERE id = #{id}")
     int updatePasswordHash(@Param("id") String id, @Param("hash") String hash);
+
+    /**
+     * 按邮箱精确查一个用户。
+     *
+     * <p><b>为什么不复用 {@code findByUsernameOrEmail}。</b>
+     * 「忘记密码」这个入口只能按邮箱找人。用那个「用户名或邮箱」的接口的话，
+     * 一个把用户名取成别人邮箱地址的账号会在这里被匹配到——
+     * 于是往那个地址发重置邮件，等于给了一个骚扰（甚至接管）别人的通道。
+     * 入口越敏感，匹配条件越要窄。
+     */
+    @Select("SELECT * FROM app_user WHERE email = #{email} LIMIT 1")
+    AppUserEntity findByEmail(@Param("email") String email);
+
+    /** 标记邮箱验证结果。 */
+    @Update("UPDATE app_user SET email_verified = #{verified} WHERE id = #{id}")
+    int updateEmailVerified(@Param("id") String id, @Param("verified") boolean verified);
 }

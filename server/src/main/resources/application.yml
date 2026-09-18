@@ -37,6 +37,32 @@ server:
 spring:
   application:
     name: shilian-server
+  #
+  # 发信（忘记密码重置 / 邮箱验证）。真实值一律走 .env.properties（已 gitignore），
+  # 这里只放占位符 + 本机默认值。
+  #
+  # ⚠ 端口写死 465（SSL），不要用 25：阿里云 ECS 默认封禁 25 端口的出方向，
+  # 而本地开发机上 25 往往是通的。走 25 的表现会是「本地能发、线上发不出去」，
+  # 而且没有报错——只有超时，极难往回查。
+  #
+  # ⚠ password 那一栏填的是网易邮箱的**客户端授权码**，不是登录密码。
+  # 用登录密码的表现是 535 认证失败，而网易的报错不告诉你是哪一种错，
+  # 很容易误判成「SMTP 服务没开」。
+  mail:
+    host: ${SPRING_MAIL_HOST:smtp.163.com}
+    port: ${SPRING_MAIL_PORT:465}
+    username: ${SPRING_MAIL_USERNAME:}
+    password: ${SPRING_MAIL_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: true
+          ssl:
+            enable: true
+          # 连不上时别让主线程干等。留空会用 JavaMail 的默认超时（近乎无限），
+          # 表现是「点一下忘记密码，页面转半天」——而用户不知道该重试还是该等。
+          connectiontimeout: 8000
+          writetimeout: 8000
   # 一次分析要等「抓网页 + 调 AI」好几秒，用虚拟线程挂起等待，
   # 不占平台线程。这样同时分析几条也不会互相拖慢。
   threads:
@@ -123,6 +149,11 @@ mybatis-plus:
   type-handlers-package: com.shilian.repo.handler
 
 shilian:
+  # 邮件里那些链接指向哪儿。必须是用户实际打开拾链的那个地址——
+  # 写成 127.0.0.1 的话，用户点开邮件里的链接会连到自己电脑上，
+  # 而浏览器给的是「无法访问」，他只会以为是链接坏了。
+  # 上线时由 SHILIAN_PUBLIC_URL 覆盖（DEPLOY.md 那套环境变量）。
+  public-url: ${SHILIAN_PUBLIC_URL:http://127.0.0.1:5178}
   deepseek:
     base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
     model: ${DEEPSEEK_MODEL:deepseek-chat}
