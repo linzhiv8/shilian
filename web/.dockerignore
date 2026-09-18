@@ -1,0 +1,19 @@
+# 构建上下文里不要的东西。
+#
+# 这几条很关键：node_modules 有 151M，进构建上下文会让 docker build
+# 光是「传上下文」就卡几分钟，而且它会在容器里被 npm ci 重新装一遍。
+node_modules
+dist
+
+# 本地日志
+*.log
+
+# 编辑器 / 系统
+.idea
+.vscode
+.DS_Store
+
+# 别把宿主机上的密钥带进镜像
+.env
+.env.*
+!.env.example

@@ -1,0 +1,137 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  /*
+   * canvas 是「纸」：杂志感的底色，比纯白灰暖一点点。
+   * 只暖一档（#fbfaf9 而不是米黄），因为它要托住几百张卡片，
+   * 偏色重了会让领域色全部发脏。surface 保持纯白，靠对比把卡片「抬」起来。
+   */
+  --canvas: #fbfaf9;
+  --surface: #ffffff;
+  --sunken: #f4f3f1;
+  --line: #e7e5e2;
+  /* 比 line 更淡一档，用在列表条目之间——条目间的分隔不该和卡片边框一样重 */
+  --line-soft: #f0eee9;
+  --line-strong: #d6d3ce;
+  --ink: #18181b;
+  --ink2: #52525b;
+  /* 暖灰，不是中性灰。中性灰（#a1a1aa）落在暖纸上会发蓝、显得脏 */
+  --ink3: #8f8d88;
+  --accent: #4f46e5;
+  --accent-soft: #eef2ff;
+
+  /* 衬线字只用在标题、数字和「你当时写的」这类需要停下来读的地方 */
+  --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Source Han Serif SC",
+    "Songti SC", "SimSun", Georgia, serif;
+
+  --d-indigo-tint: #eef2ff; --d-indigo-deep: #4f46e5;
+  --d-blue-tint:   #eff6ff; --d-blue-deep:   #2563eb;
+  --d-pink-tint:   #fdf2f8; --d-pink-deep:   #db2777;
+  --d-amber-tint:  #fffbeb; --d-amber-deep:  #b45309;
+  --d-teal-tint:   #f0fdfa; --d-teal-deep:   #0d9488;
+  --d-green-tint:  #f0fdf4; --d-green-deep:  #16a34a;
+  --d-violet-tint: #f5f3ff; --d-violet-deep: #7c3aed;
+  --d-cyan-tint:   #ecfeff; --d-cyan-deep:   #0891b2;
+  --d-orange-tint: #fff7ed; --d-orange-deep: #ea580c;
+  --d-gray-tint:   #f4f4f5; --d-gray-deep:   #52525b;
+}
+
+.dark {
+  /* 深色下同样只暖一档。纯黑会让衬线字显得冷硬，失去「纸」的隐喻 */
+  --canvas: #0c0b0d;
+  --surface: #141316;
+  --sunken: #1e1d21;
+  --line: #2a292d;
+  --line-soft: #221f24;
+  --line-strong: #36363d;
+  --ink: #f5f5f4;
+  --ink2: #a8a29e;
+  --ink3: #78716c;
+  --accent: #818cf8;
+  --accent-soft: #1e1b4b;
+
+  --d-indigo-tint: #1e1b4b; --d-indigo-deep: #a5b4fc;
+  --d-blue-tint:   #172554; --d-blue-deep:   #93c5fd;
+  --d-pink-tint:   #500724; --d-pink-deep:   #f9a8d4;
+  --d-amber-tint:  #451a03; --d-amber-deep:  #fcd34d;
+  --d-teal-tint:   #042f2e; --d-teal-deep:   #5eead4;
+  --d-green-tint:  #052e16; --d-green-deep:  #86efac;
+  --d-violet-tint: #2e1065; --d-violet-deep: #c4b5fd;
+  --d-cyan-tint:   #083344; --d-cyan-deep:   #67e8f9;
+  --d-orange-tint: #431407; --d-orange-deep: #fdba74;
+  --d-gray-tint:   #1f1f23; --d-gray-deep:   #a1a1aa;
+}
+
+@theme inline {
+  --font-serif: var(--font-serif);
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-sunken: var(--sunken);
+  --color-line: var(--line);
+  --color-linesoft: var(--line-soft);
+  --color-line-strong: var(--line-strong);
+  --color-ink: var(--ink);
+  --color-ink2: var(--ink2);
+  --color-ink3: var(--ink3);
+  --color-accent: var(--accent);
+  --color-accentsoft: var(--accent-soft);
+}
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection { background: var(--accent-soft); color: var(--accent); }
+
+/*
+ * 衬线字的兜底类。@theme 里已经映射了 font-serif，但抽屉、回顾这类
+ * 需要「一整块文字都是衬线」的地方用类更省事，不用每个元素都挂一次。
+ */
+.serif { font-family: var(--font-serif); }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 99px;
+  border: 3px solid var(--canvas);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--ink3); }
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+.rise { animation: rise .34s cubic-bezier(.22,.61,.36,1) both; }
+
+@keyframes slidein {
+  from { opacity: 0; transform: translateX(18px); }
+  to   { opacity: 1; transform: none; }
+}
+.slidein { animation: slidein .3s cubic-bezier(.22,.61,.36,1) both; }
+
+@keyframes fadein {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.fadein { animation: fadein .22s ease both; }
+
+@keyframes pulse-soft {
+  0%, 100% { opacity: .4; }
+  50%      { opacity: .8; }
+}
+.pulse-soft { animation: pulse-soft 1.4s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .rise, .slidein, .fadein, .pulse-soft { animation: none; }
+}

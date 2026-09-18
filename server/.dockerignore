@@ -1,0 +1,18 @@
+# 构建上下文里不要的东西。
+#
+# ⚠ 最重要的一条：.env.properties 里有 API Key，绝不能进镜像。
+# 容器的配置一律走环境变量（见根目录的 docker-compose.yml）。
+.env.properties
+.env
+
+# 构建产物与本地数据
+target/
+data/
+
+# 编辑器 / 系统
+.idea
+*.iml
+.DS_Store
+
+# 本地脚本的临时产物
+*.log

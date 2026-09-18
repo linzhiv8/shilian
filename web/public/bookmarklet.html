@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>拾链 · 书签小工具</title>
+<style>
+  :root {
+    --canvas:#fafafa; --surface:#fff; --sunken:#f4f4f5;
+    --line:#e7e7ea; --line-strong:#d6d6db;
+    --ink:#18181b; --ink2:#52525b; --ink3:#a1a1aa;
+    --accent:#4f46e5; --accent-soft:#eef2ff;
+  }
+  .dark {
+    --canvas:#09090b; --surface:#131316; --sunken:#1c1c20;
+    --line:#26262b; --line-strong:#3a3a42;
+    --ink:#fafafa; --ink2:#a1a1aa; --ink3:#6b6b74;
+    --accent:#818cf8; --accent-soft:#1e1b4b;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; padding:56px 24px; min-height:100vh;
+    background:var(--canvas); color:var(--ink);
+    font:400 14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  .wrap { max-width:620px; margin:0 auto; }
+  h1 { font-size:19px; font-weight:500; margin:0 0 6px; letter-spacing:-0.01em; }
+  .lede { color:var(--ink2); font-size:13.5px; margin:0 0 32px; }
+  h2 { font-size:13px; font-weight:500; margin:0 0 12px; color:var(--ink); }
+  .step { margin-bottom:28px; }
+  .step p { color:var(--ink2); font-size:13px; margin:0 0 12px; }
+  .step p:last-child { margin-bottom:0; }
+  .drag {
+    display:inline-flex; align-items:center; gap:8px;
+    padding:9px 16px; border-radius:10px;
+    background:var(--accent); color:#fff; font-size:13.5px; font-weight:500;
+    text-decoration:none; cursor:grab; user-select:none;
+    border:1px solid transparent;
+  }
+  .drag:active { cursor:grabbing; }
+  .arrow { display:block; margin:14px 0 0; color:var(--ink3); font-size:12.5px; }
+  code, .mono {
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:12.5px; background:var(--sunken);
+    padding:2px 5px; border-radius:5px; color:var(--ink2);
+  }
+  pre {
+    background:var(--sunken); border:1px solid var(--line); border-radius:10px;
+    padding:12px 14px; margin:0;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:12px; line-height:1.7; color:var(--ink2);
+    white-space:pre-wrap; word-break:break-all;
+  }
+  .note {
+    border-left:2px solid var(--accent); padding-left:12px;
+    color:var(--ink2); font-size:12.5px;
+  }
+  .toggle {
+    position:fixed; top:20px; right:20px;
+    width:30px; height:30px; border-radius:8px;
+    border:1px solid var(--line); background:var(--surface);
+    color:var(--ink3); cursor:pointer; font-size:14px; line-height:1;
+  }
+  .toggle:hover { border-color:var(--line-strong); color:var(--ink); }
+</style>
+</head>
+<body>
+<button class="toggle" id="t" title="切换深浅色">◐</button>
+<div class="wrap">
+  <h1>书签小工具</h1>
+  <p class="lede">
+    把下面这个按钮拖到浏览器书签栏。以后在任何页面点一下，
+    它就把当前页地址送到拾链并自动开始分析——不用复制、切窗口、粘贴、回车。
+  </p>
+
+  <div class="step">
+    <h2>1. 拖到书签栏</h2>
+    <a class="drag" id="bm" href="#" onclick="return false;">存到拾链</a>
+    <span class="arrow">↑ 按住这个按钮，拖到浏览器书签栏（Ctrl+Shift+B 可以显示书签栏）</span>
+  </div>
+
+  <div class="step">
+    <h2>2. 用起来</h2>
+    <p>
+      看到一个有意思的网站，点书签栏上的「存到拾链」。
+      会弹出一个窗口，AI 已经在分析了。挑一句备注、看一眼分类，点「就这样存」。
+    </p>
+  </div>
+
+  <div class="step">
+    <h2>3. 前提</h2>
+    <p>后端和前端都得在跑（本机自用，没部署到服务器）：</p>
+    <pre>cd D:\workspace\shilian\server
+./mvn.sh spring-boot:run
+
+cd D:\workspace\shilian
+npm run dev</pre>
+    <p style="margin-top:12px">
+      后端没起的时候，拾链会直接告诉你「后端没连上」，不会静默失败。
+    </p>
+  </div>
+
+  <div class="step">
+    <h2>它是怎么工作的</h2>
+    <p>
+      本质就是一个普通链接，指向 <code>/?url=</code> 加上当前页地址：
+    </p>
+    <pre id="code"></pre>
+    <p style="margin-top:12px" class="note">
+      没有装扩展、没有后台服务、没有跨域请求。就是一次普通的页面跳转，
+      所以它不会被浏览器的安全策略拦掉，也不需要任何权限。
+    </p>
+  </div>
+
+  <div class="step">
+    <h2>如果拖拽不管用</h2>
+    <p>
+      有些浏览器不允许拖拽 <code>javascript:</code> 开头的链接。
+      那就手动新建一个书签，名称随便填，地址粘贴成上面那段代码即可。
+    </p>
+  </div>
+</div>
+
+<script>
+  var APP = location.origin + "/?url=";
+  var CODE = "javascript:(function(){window.open('" + APP +
+             "'+encodeURIComponent(location.href),'shilian')})()";
+
+  document.getElementById("bm").setAttribute("href", CODE);
+  document.getElementById("code").textContent = CODE;
+
+  var t = document.getElementById("t");
+  if (localStorage.getItem("shilian-theme") === "dark" ||
+      (!localStorage.getItem("shilian-theme") &&
+       matchMedia("(prefers-color-scheme: dark)").matches)) {
+    document.documentElement.classList.add("dark");
+  }
+  t.onclick = function () {
+    var dark = document.documentElement.classList.toggle("dark");
+    localStorage.setItem("shilian-theme", dark ? "dark" : "light");
+  };
+</script>
+</body>
+</html>

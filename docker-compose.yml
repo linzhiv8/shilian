@@ -1,0 +1,168 @@
+# 拾链 · 单机部署
+#
+#   cp .env.example .env      # 填 DEEPSEEK_API_KEY 和 MySQL 连接信息
+#   docker compose up -d --build
+#   打开 http://<服务器地址>:80
+#
+# 两个容器：
+#   web  nginx —— 静态文件 + 把 /api 反代给 api
+#   api  Spring Boot —— 只在内网暴露，不映射到宿主机
+#
+# ⚠ **数据库不在这里**。这个 compose 连的是**已经存在的 MySQL**
+#   （服务器上原本就有的那个）。所以：
+#   - 没有数据库容器、也没有数据卷
+#   - 备份是 mysqldump 的事，不是「拷文件」的事
+#   - 建库要你自己做一次，见 DEPLOY.md
+#
+#   为什么不把 MySQL 也放进 compose：复用已有的实例能少维护一个服务、
+#   少一份要单独备份的数据；而且服务器上那个 MySQL 通常已经在做定期备份了。
+
+services:
+
+  api:
+    build:
+      context: ./server
+    image: shilian-api:local
+    restart: unless-stopped
+
+    environment:
+      # ── 绑定地址 ────────────────────────────────────────────
+      # ⚠ 这一条不改的话容器里只监听 127.0.0.1，端口映射也连不上。
+      # application.yml 里写的是 127.0.0.1（本地开发时只开给本机，是对的），
+      # 这里用环境变量覆盖它——Spring Boot 的宽松绑定会自动映射，
+      # 不需要改代码。
+      SERVER_ADDRESS: "0.0.0.0"
+
+      # 让后端认 nginx 传来的 X-Forwarded-*。
+      # 不配的话，后端以为外面是 http，cookie 的 Secure 判断和重定向都会错。
+      SERVER_FORWARD_HEADERS_STRATEGY: framework
+      # 显式声明 SameSite。SecurityConfig 的 CSRF 缓解依赖它
+      # （注释里写了「走 SameSite=Lax」），但代码里没有显式设置，
+      # 一直是靠容器默认值——生产环境把它写明，别靠默认。
+      SERVER_SERVLET_SESSION_COOKIE_SAME_SITE: lax
+      # 上了 HTTPS 之后改成 true。走纯 HTTP 时不能开，否则浏览器不发 cookie。
+      SERVER_SERVLET_SESSION_COOKIE_SECURE: ${COOKIE_SECURE:-false}
+
+      # ── 数据库（外部 MySQL）─────────────────────────────────
+      # ⚠ 主机名别写 127.0.0.1。容器里的 127.0.0.1 是**容器自己**，
+      #   不是宿主机。MySQL 跑在宿主机上就写 host.docker.internal
+      #   （下面 extra_hosts 已经把它映射好了），跑在别的机器上就写那台的 IP。
+      SPRING_DATASOURCE_URL: "jdbc:mysql://${MYSQL_HOST:-host.docker.internal}:${MYSQL_PORT:-3306}/${MYSQL_DATABASE:-shilian}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true"
+      SPRING_DATASOURCE_USERNAME: ${MYSQL_USER:?必须在 .env 里设置 MYSQL_USER}
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD:?必须在 .env 里设置 MYSQL_PASSWORD}
+
+      # ── 时区 ────────────────────────────────────────────────
+      # 容器默认 UTC。不设的话「今天」的边界会差 8 小时，
+      # 周报和回顾的闲置天数都会算错。
+      # MySQL 那边也要对齐：JDBC URL 里的 serverTimezone 和它配合。
+      TZ: ${TZ:-Asia/Shanghai}
+
+      # ── 模型 ────────────────────────────────────────────────
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?必须在 .env 里设置 DEEPSEEK_API_KEY}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://api.siliconflow.cn/v1}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-m3}
+
+      # ── 抓取代理（可选）─────────────────────────────────────
+      # 服务器能直连 github.com 就留空。
+      # 如果部署在国内，抓取会 TCP 超时（HttpConnectTimeoutException），
+      # 这时填一个容器能访问到的代理地址——注意 127.0.0.1 指的是**容器自己**，
+      # 不是宿主机。宿主机上的代理要用 host.docker.internal 或宿主机内网 IP。
+      SHILIAN_FETCH_PROXY_HOST: ${SHILIAN_FETCH_PROXY_HOST:-}
+      SHILIAN_FETCH_PROXY_PORT: ${SHILIAN_FETCH_PROXY_PORT:-0}
+
+      # 生产别用 DEBUG，日志量差一个数量级
+      LOGGING_LEVEL_COM_SHILIAN: ${LOG_LEVEL:-INFO}
+
+      # 时区给两道保险：TZ 管系统层，-Duser.timezone 管 Java 层。
+      # 只给 TZ 是不够的——Java 在某些平台上不认这个环境变量
+      # （实测 Windows 上就不认，日志时间戳还是本地时区），
+      # 而 -Duser.timezone 用的是 JDK 自带的时区数据，不依赖系统 tzdata。
+      JAVA_OPTS: "-XX:MaxRAMPercentage=75 -Dfile.encoding=UTF-8 -Duser.timezone=${TZ:-Asia/Shanghai}"
+
+    # 让容器能通过 host.docker.internal 访问宿主机上的 MySQL。
+    # Linux 上这个名字不是自动存在的（Docker Desktop 才有），
+    # 必须显式加这一条，否则连不上还看不出原因（就是「连接超时」）。
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    # 用 expose 而不是 ports：只有 nginx 需要访问它，
+    # 没必要把 8080 暴露到宿主机（少一个攻击面）。
+    expose:
+      - "8080"
+
+    # 兜底：万一容器起不来，至少能看到日志
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  web:
+    build:
+      context: ./web
+    image: shilian-web:local
+    restart: unless-stopped
+
+    depends_on:
+      api:
+        # 等后端健康了再起 nginx。不等也能用（前端会提示「后端没连上」），
+        # 但等一下能省掉一次 502 的困惑。
+        condition: service_healthy
+
+    ports:
+      - "${HTTP_PORT:-80}:80"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# ────────────────────────────────────────────────────────────────
+# 上 HTTPS 的话，最省事的是在前面再加一个 Caddy，让它自动申请证书
+# （需要一个指向这台机器的域名）。把上面 web 的 ports 删掉，
+# 换成下面这段：
+#
+#   caddy:
+#     image: caddy:2-alpine
+#     restart: unless-stopped
+#     ports: ["80:80", "443:443"]
+#     volumes:
+#       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+#       - caddy-data:/data
+#       - caddy-config:/config
+#     depends_on: [web]
+#
+# Caddyfile 就三行：
+#
+#   shilian.example.com {
+#       reverse_proxy web:80
+#   }
+#
+# 然后 .env 里把 COOKIE_SECURE 改成 true。
+# ────────────────────────────────────────────────────────────────
+#
+# ────────────────────────────────────────────────────────────────
+# 想在本地用 Docker 起一个 MySQL 来开发的话，加一个覆盖文件
+# docker-compose.dev-mysql.yml（不要改这个文件），内容：
+#
+#   services:
+#     mysql:
+#       image: mysql:8.4
+#       restart: unless-stopped
+#       environment:
+#         MYSQL_ROOT_PASSWORD: root
+#         MYSQL_DATABASE: shilian
+#         MYSQL_USER: shilian
+#         MYSQL_PASSWORD: shilian
+#         TZ: Asia/Shanghai
+#       command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+#       ports: ["3306:3306"]
+#       volumes: ["shilian-mysql-dev:/var/lib/mysql"]
+#   volumes:
+#     shilian-mysql-dev:
+#
+# 然后 MYSQL_HOST=127.0.0.1（走宿主机端口，不走 docker 内网）。
+# ────────────────────────────────────────────────────────────────

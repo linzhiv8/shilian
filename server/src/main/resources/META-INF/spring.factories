@@ -1,0 +1,13 @@
+# Spring Boot 的扩展点注册表。
+#
+# ⚠ 这里放的是**非自动配置**的扩展点（FailureAnalyzer 之类），
+#   所以必须在 META-INF/spring.factories 里，不能写进 META-INF/spring/*.imports。
+#   写错位置**不报错、不警告，那个类就是不生效** —— 这个坑踩过一次
+#   （AppHomeEnvironmentPostProcessor），所以在这里写清楚。
+#
+# 各项说明：
+#   DatabaseUnreachableFailureAnalyzer  连不上 MySQL 时，用一段能照着做的提示
+#                                       替代那 60 行 Spring 异常堆栈。
+#                                       见该类注释里「为什么 StartupSelfCheck 顶不上」。
+org.springframework.boot.diagnostics.FailureAnalyzer=\
+com.shilian.config.DatabaseUnreachableFailureAnalyzer

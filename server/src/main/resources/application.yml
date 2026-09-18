@@ -1,0 +1,177 @@
+server:
+  port: 8080
+  address: 127.0.0.1
+
+spring:
+  application:
+    name: shilian-server
+  # 一次分析要等「抓网页 + 调 AI」好几秒，用虚拟线程挂起等待，
+  # 不占平台线程。这样同时分析几条也不会互相拖慢。
+  threads:
+    virtual:
+      enabled: true
+  # 本地密钥放 server/.env.properties（已 gitignore），不用设环境变量。
+  #
+  # 两个路径都试，是因为后端住在 server/ 子目录里，而「工作目录」取决于从哪儿启动：
+  #   从 server/ 启动      → ./.env.properties 命中
+  #   从工程根目录启动      → ./server/.env.properties 命中（IDEA 的默认行为）
+  # 两个路径不会同时存在（那需要 server/server/ 这种目录），所以顺序不影响实际行为。
+  # 没有这个兜底时，工作目录一错就会「Key 读不到、代理配置也失效」，
+  # 而应用不会报错——这正是之前踩过的坑。
+  config:
+    import:
+      - optional:file:./.env.properties
+      - optional:file:./server/.env.properties
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    # 默认值指向本机 3306 上的 shilian 库。真实连接串放 .env.properties（已 gitignore），
+    # 部署时由 docker-compose 用环境变量注入——两处都是覆盖这个默认值，不用改这里。
+    #
+    # ⚠ 这里只允许出现「本机默认值」，绝不能写真实的服务器地址和密码：
+    #   application.yml 是**进版本库的文件**，写在这里等于把库的地址和凭据一起提交。
+    #   这不是假设——2026-09-18 审查时发现它曾经写着生产库的 IP 和 root 密码，
+    #   而当时工程正准备 git init。凭据一律走 .env.properties / 环境变量。
+    #
+    # 四个参数都别删，各自对应一个真实的坑：
+    #   useSSL=false               内网/本机连接没有证书，开着要么握手失败要么一直警告
+    #   allowPublicKeyRetrieval    MySQL 8 默认 caching_sha2_password，不开 SSL 时
+    #                              首次认证要先取服务器公钥，否则报
+    #                              "Public Key Retrieval is not allowed"——而这条报错
+    #                              和密码、权限都无关，很容易查错方向
+    #   connectionTimeZone=LOCAL   不指定的话驱动要去探测服务器时区，探测不出来就启动失败。
+    #                              本项目所有时间都是应用算好的字符串（VARCHAR(19)），
+    #                              数据库不参与时间运算，所以用 LOCAL 就够
+    #   rewriteBatchedStatements   把批量 insert 合成一条多值语句。补齐历史向量时
+    #                              一次几十条，开不开差别很明显
+    url: '${SPRING_DATASOURCE_URL:jdbc:mysql://127.0.0.1:3306/shilian?useSSL=false&allowPublicKeyRetrieval=true&connectionTimeZone=LOCAL&rewriteBatchedStatements=true}'
+    username: ${SPRING_DATASOURCE_USERNAME:root}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+    hikari:
+      # 原来 SQLite 是单写入者模型，池子只能开 1（见 git 历史里的注释）。
+      # MySQL 支持并发写，池子放开到 8——这个数字是按「单人自用 + 偶尔几台设备」
+      # 估的，够用且不会把 MySQL 的 max_connections 吃掉。
+      maximum-pool-size: 8
+      minimum-idle: 2
+      connection-timeout: 10000
+      # 必须比 MySQL 的 wait_timeout（默认 28800 秒）短。
+      # 不然连接会被服务器单方面掐掉，而池子还以为它是好的，
+      # 表现为「跑了一整天之后第一个请求报 Communications link failure」——
+      # 重启就好，所以特别难查。
+      max-lifetime: 1800000
+      pool-name: shilian-mysql
+  sql:
+    init:
+      # 关掉 Spring 自带的初始化，改由 Migrations（schema_version 表）统一管理。
+      # 两套机制并存会打架：Spring 每次启动都跑一遍脚本，
+      # 而迁移器按版本号判断要不要跑，两边各记一套进度，
+      # 将来某个迁移依赖「上一版已经跑过」时就会错。
+      mode: never
+
+# MyBatis-Plus。数据访问层从手写 JdbcTemplate 迁到这里。
+mybatis-plus:
+  configuration:
+    # link 表的列是 url_normalized / summary_short 这种下划线写法，
+    # 实体字段是 urlNormalized / summaryShort。这条开着才能自动对上。
+    map-underscore-to-camel-case: true
+  global-config:
+    # 启动时那行 ASCII art 横幅，个人项目不需要
+    banner: false
+    db-config:
+      # 默认主键策略。表里没有自增主键的表（link / app_user / link_embedding）
+      # 都是 Java 侧生成 id 的业务主键，所以默认必须是 INPUT —— 用 ASSIGN_UUID
+      # 会生成 32 位无横线 UUID，和历史数据的 12 位十六进制格式对不上，
+      # 同一条记录前后两次存的 id 会长短不一。
+      # ai_log / correction 两列是 AUTO_INCREMENT，在实体上单独标 IdType.AUTO 覆盖。
+      id-type: input
+  # 自定义 TypeHandler 放这儿，MyBatis 会按包扫描并注册。
+  # 必须全局注册而不是只在实体上写 @TableField(typeHandler=...)：
+  # 自定义 @Select 走的是 MyBatis 的自动映射，它按 javaType 去 registry 里找
+  # handler，不会读 @TableField 上的声明。只写注解的话，查询回来的
+  # List<String> / float[] 会拿到 null 或者直接抛「找不到 TypeHandler」。
+  type-handlers-package: com.shilian.repo.handler
+
+shilian:
+  deepseek:
+    base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+    model: ${DEEPSEEK_MODEL:deepseek-chat}
+    api-key: ${DEEPSEEK_API_KEY:}
+    temperature: 0.6
+    max-tokens: 1400
+    # 校验不过时最多让模型重写几次
+    max-repair: 1
+    # 单次调用超时。原来硬编码 90 秒——上游挂掉时用户要干等一分半才知道失败，
+    # 而这期间他多半会再点一次，把并发推得更高。15 秒足够正常的分析跑完。
+    timeout-ms: 15000
+  # 上游不听话时怎么自保。详见 ShilianProperties.Resilience
+  resilience:
+    max-attempts: 2            # 网络层最多试 2 次（1 次正常 + 1 次重试）
+    backoff-base-ms: 500       # 第一次重试等 500ms 左右，第二次 1s
+    budget-ms: 25000           # 单次调用总预算，用完就不再重试
+    failure-threshold: 5       # 连续失败 5 次就熔断
+    open-ms: 30000             # 熔断后冷却 30 秒再放一个请求试探
+    max-concurrent-analyses: 2 # 同时最多 2 个分析，超了直接说忙，不排队干等
+  # 登录安全。详见 ShilianProperties.Auth
+  auth:
+    max-failed-attempts: 5     # 连续错 5 次就锁
+    lock-minutes: 15           # 锁 15 分钟
+    # 每个 IP 一小时能注册几个。个人自用的工具不需要对外开放注册，
+    # 5 个足够覆盖「自己多设备注册 + 手滑重试」，挡得住批量刷。
+    max-registrations-per-hour: 5
+    # 每个 IP 一分钟能试几次登录。和上面的账号锁定是两回事：
+    # 那个防「盯着一个账号撞」，这个防「拿一堆账号各试一次」。
+    max-login-attempts-per-minute: 10
+    # 同一个邮箱一天能发起几次注册。IP 限流挡不住换 IP 的人——
+    # 代理池很便宜，而「每个邮箱只试一次」的攻击者在 IP 维度上完全正常。
+    # 今天它挡的是「拿同一个邮箱反复试探」；等邮箱验证上线（阶段 6），
+    # 它就是防止往同一个地址狂发验证信的那道闸。
+    # 给 5 是留足手滑重试的余量：额度太紧，别人就能用你的邮箱把你锁在门外。
+    max-registrations-per-email-per-day: 5
+  fetch:
+    timeout-ms: 15000
+    # 正文截断长度，超长部分信息价值低
+    max-chars: 8000
+    user-agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    # 抓取时走的 HTTP 代理。host 留空 = 直连。
+    #
+    # 为什么要这个开关：github.com 这类站在国内直连，TCP 连接阶段就超时，
+    # 报错是 HttpConnectTimeoutException——而浏览器打得开，于是看起来像后端的 bug。
+    # 差别在浏览器走系统代理，而 Java 不会自动读系统代理（注册表和 http_proxy 环境变量都不看）。
+    #
+    # 真实值放在 .env.properties 里，不写在这——代理地址是「这台机器的事」，
+    # 写死了部署到服务器上就变成「代理没开则抓取全挂」。
+    proxy:
+      host: ""
+      port: 0
+  web:
+    # 前端 dev server，用于本地跨域
+    allowed-origins: "http://127.0.0.1:5178,http://localhost:5178"
+  # 语义搜索的向量服务。按 OpenAI 的 /embeddings 协议，所以换服务商只改 base-url 和 model。
+  # DeepSeek 不提供 embeddings 接口，所以这里是独立的一份配置。
+  # 没配 Key 时语义搜索会明确说「为什么用不了」，而不是静默降级成关键词搜索
+  # ——后者会让用户以为「语义搜索效果就这样」。
+  embedding:
+    base-url: ${EMBEDDING_BASE_URL:https://api.siliconflow.cn/v1}
+    model: ${EMBEDDING_MODEL:BAAI/bge-m3}
+    api-key: ${EMBEDDING_API_KEY:}
+    # 一次请求算多少条。批量是为了补齐历史记录时少发几个来回
+    batch-size: 32
+    # 低于这个相似度就不算命中。
+    #
+    # ⚠ 这是整套配置里**唯一需要对着真实模型校准**的数字，默认值是个估计。
+    # 校准方法：把库里的记录都算一遍向量，然后搜一个你确定有答案的问题，
+    # 看命中那几条的分数落在哪；把阈值定在「命中」和「不命中」中间。
+    # 经验参考：bge-m3 上相关通常 0.5+、无关 0.3 以下，所以 0.35 是偏保守的取值。
+    #
+    # 调高不会让结果变空——低于阈值时后端会退回「最像的 3 条」并标 fallback，
+    # 前端会说明「没有很接近的」。所以宁可先调高一点，别让无关记录混进来。
+    min-score: 0.35
+    timeout-ms: 30000
+
+logging:
+  level:
+    root: INFO
+    com.shilian: DEBUG
+  pattern:
+    # %X{traceId} 是 TraceIdFilter 塞进 MDC 的那个值；:- 后面是「没有时显示什么」。
+    # 没有这个占位符，日志里就看不见 traceId，过滤器等于白做。
+    console: "%d{HH:mm:ss.SSS} %5p [%X{traceId:--}] %-36.36logger{35} : %m%n%wEx"

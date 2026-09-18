@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.5.3</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>com.shilian</groupId>
+  <artifactId>shilian-server</artifactId>
+  <version>0.1.0</version>
+  <name>shilian-server</name>
+  <description>拾链 · 个人网址库后端</description>
+
+  <properties>
+    <java.version>21</java.version>
+    <jsoup.version>1.21.1</jsoup.version>
+    <!--
+      必须用 spring-boot3 那个 artifactId。MyBatis-Plus 对 Boot 2 / 3 / 4
+      发了三个不同的 starter（mybatis-plus-boot-starter /
+      mybatis-plus-spring-boot3-starter / mybatis-plus-spring-boot4-starter），
+      拿错的那个能编译、能启动，但自动配置类不被 Spring Boot 3 的
+      AutoConfiguration.imports 机制加载 —— 现象是「Mapper 注入不进来」。
+    -->
+    <mybatis-plus.version>3.5.17</mybatis-plus.version>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-jdbc</artifactId>
+    </dependency>
+
+    <!--
+        MyBatis-Plus。数据访问层从手写 JdbcTemplate 迁到 Mapper。
+
+        仍然保留上面的 spring-boot-starter-jdbc：MyBatis-Plus 是 ORM，
+        它不管 DDL。Migrations（用 ScriptUtils 跑建表脚本）和
+        StartupSelfCheck（查 schema 版本与行数）这两个类是基础设施，
+        不是 ORM 的职责范围，它们继续用 JdbcTemplate。
+
+        刻意不引 mybatis-plus-jsqlparser：那是分页/多租户等拦截器的
+        解析依赖，本项目没有用到（列表查询自带 LIMIT，不走分页插件）。
+        将来要加分页插件时再引，否则就是一个白带的依赖。
+    -->
+    <dependency>
+      <groupId>com.baomidou</groupId>
+      <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+      <version>${mybatis-plus.version}</version>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+
+    <!--
+        认证授权。决策记录：这里用 Spring Security 而不是自研拦截器 + JWT，
+        因为密码哈希、会话固定防护、CSRF、登出失效这几件事自己写几乎必踩坑，
+        而它们写错的表现是「不报错，只是被黑」。
+        只启用核心能力，不引入 OAuth2 和方法级安全那套复杂配置。
+    -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
+
+    <!--
+        数据库驱动。版本由 spring-boot-dependencies 管，这里不写 version
+        ——写死了将来升级 Spring Boot 会留下一个不一致的驱动。
+    -->
+    <dependency>
+      <groupId>com.mysql</groupId>
+      <artifactId>mysql-connector-j</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.jsoup</groupId>
+      <artifactId>jsoup</artifactId>
+      <version>${jsoup.version}</version>
+    </dependency>
+
+  </dependencies>
+
+  <build>
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+        <filtering>false</filtering>
+      </resource>
+      <!--
+        提示词只有一份，放在 server/tools/prompt-lab/。
+        这里把它们打进 jar 的 prompts/ 目录，避免两处副本走偏。
+        改提示词改那些文件即可，重新构建自动生效。
+      -->
+      <resource>
+        <directory>${project.basedir}/tools/prompt-lab</directory>
+        <includes>
+          <include>system-prompt.md</include>
+          <include>weekly-prompt.md</include>
+        </includes>
+        <targetPath>prompts</targetPath>
+      </resource>
+    </resources>
+
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>
