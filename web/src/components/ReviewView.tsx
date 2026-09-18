@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   Loader2, ExternalLink, Star, Check, Trash2, RefreshCw,
-  Clock3, PartyPopper, AlertTriangle, ArrowLeft,
+  Clock3, PartyPopper, AlertTriangle, ArrowLeft, ClipboardPaste,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { domainOf, deep, type LinkItem } from "../types";
@@ -14,6 +14,14 @@ interface Props {
   onDelete: (id: string) => void;
   /** 标记「看过了」，之后不再推给用户 */
   onMarkRead: (id: string) => void;
+  /** 就地补正文：打开同一个抽屉的「补正文」模式，补完回到这里而不是列表 */
+  onFix: (item: LinkItem) => void;
+  /**
+   * 补正文完成后回塞回来的那条记录。带一个 seq 是为了让同一个 id
+   * 连补两次也能触发——React 的 effect 比较的是引用，
+   * 只传 item 的话第二次拿到的是同一个对象引用时会漏掉。
+   */
+  fixedItem: { item: LinkItem; seq: number } | null;
   onExit: () => void;
   notify: (msg: string, kind?: "ok" | "warn") => void;
 }
@@ -37,7 +45,7 @@ interface Props {
  * 处理过了（看过了）、不想要（删掉）。每一个都会让它离开队列。
  */
 export default function ReviewView({
-  onOpen, onToggleStar, onDelete, onMarkRead, onExit, notify,
+  onOpen, onToggleStar, onDelete, onMarkRead, onFix, fixedItem, onExit, notify,
 }: Props) {
   const [items, setItems] = useState<LinkItem[]>([]);
   const [dueTotal, setDueTotal] = useState(0);
@@ -66,6 +74,23 @@ export default function ReviewView({
   useEffect(() => {
     void draw();
   }, [draw]);
+
+  /*
+   * 补完正文，把新结果换进当前这张卡片。
+   *
+   * 刻意<b>不重新抽队列</b>：draw() 会把 idx 归零，
+   * 于是用户已经处理过的那几张会重新冒出来一遍——
+   * 表现为「我明明处理了五条，补完一条又从第一条开始了」。
+   * 也不推进到下一条：补完就该让他看到补成了什么样，
+   * 立刻翻走等于没给反馈，他还得回列表去找这条确认。
+   */
+  useEffect(() => {
+    if (!fixedItem) return;
+    const { item } = fixedItem;
+    setItems((prev) => prev.map((x) => (x.id === item.id ? item : x)));
+    // 只认 seq：item 对象本身每次都是新的，拿它当依赖会在别的 state 变化时误触发
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fixedItem?.seq]);
 
   /** 处理完一张：先让它带走场动效，再推进到下一条。 */
   const advance = () => {
@@ -177,7 +202,7 @@ export default function ReviewView({
     <Shell onExit={onExit} progress={{ at: idx + 1, of: items.length, dueTotal }}>
       <div
         className={cn(
-          "rounded-2xl border border-line bg-surface px-7 py-7 transition-all duration-150",
+          "rounded-2xl border border-line bg-surface px-4 py-5 transition-all duration-150 sm:px-7 sm:py-7",
           leaving && "translate-y-[-6px] scale-[0.985] opacity-0",
         )}
       >
@@ -190,7 +215,8 @@ export default function ReviewView({
           回顾真正要唤醒记忆的是这两样，不是那个色块。
         */}
         <div>
-          <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.08em] text-ink3">
+          {/* 窄屏下这行会挤：领域、站点、闲置天数三段横排放不下，允许换行 */}
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] uppercase tracking-[0.08em] text-ink3">
             <span style={{ color: deep(d.color) }}>{d.name}</span>
             <span className="tracking-normal">{current.site}</span>
             <span className="ml-auto flex shrink-0 items-center gap-1 tracking-normal">
@@ -207,7 +233,8 @@ export default function ReviewView({
             {current.monogram}
           </div>
 
-          <h2 className="mt-2 font-serif text-[32px] leading-[1.2] tracking-[-0.015em] text-ink">
+          {/* 32px 在 375px 宽的屏上一行放不下几个字，窄屏收到 26px */}
+          <h2 className="mt-2 font-serif text-[26px] leading-[1.2] tracking-[-0.015em] text-ink sm:text-[32px]">
             {current.title}
           </h2>
           <p className="mt-3 text-[14px] leading-[1.75] text-ink2">
@@ -234,21 +261,37 @@ export default function ReviewView({
             )}
 
           {/*
-            这里刻意只说明、不给按钮。
-            回顾模式是「决定怎么处理」的地方（四个动作），不是「编辑」的地方；
-            在卡片上再塞一个补正文入口，会散掉「一次只看一张」的专注感，
-            而且补完之后这一屏的数据是旧的，还得处理刷新。
-            但也不能只留一句「可能不准」就完事——那是个死胡同。
-            所以明确告诉他去哪儿补。
+            这条当初没抓到正文，判断可能不准。
+
+            以前这里只有一句「回列表在这条上点补正文」——那是个死胡同：
+            他是翻回顾翻到一半撞上这条的，为了补正文退出回顾去列表里重新找一遍，
+            等于让产品自己打断自己。找到之后还得再进回顾，刚才翻到哪了也忘了。
+
+            当初不给按钮的理由是「补完这一屏的数据是旧的，还得处理刷新」，
+            这个理由现在不成立了：App 补完会把新结果回塞进这张卡片
+            （见下面的 fixedItem），原地就能看到补完的样子，不用重抽队列。
           */}
           {current.needsReview && (
-            <p className="mt-3 flex items-start gap-1.5 text-[11.5px] leading-relaxed text-amber-700 dark:text-amber-400">
+            <div className="mt-3 flex items-start gap-1.5 text-[11.5px] leading-relaxed text-amber-700 dark:text-amber-400">
               <AlertTriangle size={11.5} className="mt-[2px] shrink-0" />
-              <span>
-                这条当时没抓到正文，判断可能不准。
-                回列表在这条上点「正文没抓到，补上」可以重跑一次。
+              <span className="flex-1">
+                {/*
+                  和列表里那个补正文入口同一个道理（见 LinkEntry）：
+                  pending 是从没分析过，不是「没抓到正文」。
+                  在回顾里说错原因更糟——这一屏就一张卡，这句话是他唯一的上下文。
+                */}
+                {current.analyzeStatus === "pending"
+                  ? "这条还没分析过，判断可能不准。"
+                  : "这条当时没抓到正文，判断可能不准。"}
               </span>
-            </p>
+              <button
+                onClick={() => onFix(current)}
+                className="flex shrink-0 items-center gap-1 rounded-md border border-amber-300 px-2 py-[3px] font-medium text-amber-800 transition-colors hover:bg-amber-50 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-950/40"
+              >
+                <ClipboardPaste size={11} />
+                就在这里补
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -304,7 +347,15 @@ function Shell({
   progress: { at: number; of: number; dueTotal: number } | null;
 }) {
   return (
-    <div className="mx-auto flex min-h-full w-full max-w-[880px] flex-col px-10 pb-20 pt-10">
+    /*
+     * 窄屏（375px）下把左右留白从 40px 收到 16px。
+     *
+     * 这是工程里第一处响应式断点——之前所有视图都按桌面写的。
+     * 先只改回顾：它是唯一一个「用户会专门在手机上打开」的视图
+     * （存链接多在电脑上顺手存，回顾是零碎时间翻的）。
+     * 其余视图等真的在手机上用过再说，别为了一致提前铺开。
+     */
+    <div className="mx-auto flex min-h-full w-full max-w-[880px] flex-col px-4 pb-12 pt-6 sm:px-10 sm:pb-20 sm:pt-10">
       <div className="mb-6 flex items-center gap-3">
         <button
           onClick={onExit}

@@ -129,7 +129,8 @@ export default function TopBar({
 
   return (
     <header className="sticky top-0 z-20 border-b border-line bg-canvas/88 backdrop-blur-md">
-      <div className="mx-auto w-full max-w-[880px] px-10 pb-3.5 pt-[18px]">
+      {/* 窄屏收留白。回顾视图是要在手机上用的，顶栏是它上面那层壳，得一起收 */}
+      <div className="mx-auto w-full max-w-[880px] px-4 pb-3.5 pt-[18px] sm:px-10">
 
         {/* ── 品牌行 ── */}
         <div className="flex flex-wrap items-baseline gap-3.5">

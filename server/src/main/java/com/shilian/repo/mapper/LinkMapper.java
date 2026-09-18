@@ -52,8 +52,23 @@ public interface LinkMapper extends BaseMapper<LinkEntity> {
      * 是个纯 Java 纯函数，SQL 只负责比大小 —— 不把「闲置 N 天」这条业务规则
      * 绑死在某个数据库的函数上。
      */
+    /*
+     * V4 之前这里写的是 status NOT IN ('used', 'read')——因为那时候「已用」
+     * 是 status 的一个取值。现在 used 拆成独立列了，两件事各自排除：
+     *
+     *   · status <> 'read'  用户明确说过「别再推给我」
+     *   · used = 0          他已经用上了，不需要再提醒
+     *
+     * 「已用」仍然排除在队列外，但现在是靠 used 这一列，
+     * 所以取消已用之后它会自然地回到队列——这正是 R-03 要的效果。
+     * 之前靠 status 排除时，取消已用等于什么都没发生。
+     *
+     * ⚠ 这段判据在 ReviewPolicy 里有一份 Java 版，两处必须一起改。
+     * 分开维护是历史遗留（SQL 要能走索引、Java 要能单测），
+     * 代价就是改一处忘另一处时，侧栏的条数和点进去看到的不一致。
+     */
     String REVIEW_WHERE =
-            "user_id = #{uid} AND starred = 0 AND status NOT IN ('used', 'read') "
+            "user_id = #{uid} AND starred = 0 AND status <> 'read' AND used = 0 "
                     + "AND COALESCE(last_opened_at, created_at) <= #{cutoff}";
 
     /* ────────────── 查询 ────────────── */
@@ -168,7 +183,7 @@ public interface LinkMapper extends BaseMapper<LinkEntity> {
      * {@code updated_at}，用创建时间会把「这周标为已用的」错算成
      * 「这周存的里面标了已用的」。
      */
-    @Select("SELECT COUNT(*) FROM link WHERE user_id = #{uid} AND status = 'used' "
+    @Select("SELECT COUNT(*) FROM link WHERE user_id = #{uid} AND used = 1 "
             + "AND updated_at IS NOT NULL AND updated_at >= #{since}")
     int countUsedSince(@Param("uid") String uid, @Param("since") String since);
 

@@ -30,8 +30,16 @@ import java.util.Set;
  */
 public record ReviewPolicy(int idleDays) {
 
-    /** 标成已用或已读的不再进队列——用户已经明确表态「不用再推给我」。 */
-    private static final Set<String> EXCLUDED_STATUS = Set.of("used", "read");
+    /*
+     * 只有「看过了、别再推」这一种表态排除在队列外。
+     *
+     * V4 之前这里还有一个 'used'——那时候「已用」是 status 的取值。
+     * 现在 used 是独立列，在下面的 isDue() 里单独判。
+     * 分两处判不是啰嗦：这两件事的撤销方式不一样。
+     * 标错了「已读」要手动改回来，而「已用」是随手来回拨的开关，
+     * 取消之后它必须能立刻回到队列。
+     */
+    private static final Set<String> EXCLUDED_STATUS = Set.of("read");
 
     /**
      * 这条记录现在该不该进回顾队列。
@@ -46,6 +54,14 @@ public record ReviewPolicy(int idleDays) {
             return false;
         }
         if (item.status() != null && EXCLUDED_STATUS.contains(item.status())) {
+            return false;
+        }
+        /*
+         * 用上了的不再提醒。判的是 used 这一列，不是 status——
+         * 见本类顶部 EXCLUDED_STATUS 的注释：这样取消已用之后
+         * 它会立刻回到队列，而靠 status 排除的话取消等于什么都没发生。
+         */
+        if (item.used()) {
             return false;
         }
         LocalDateTime reference = referenceTimeOf(item);

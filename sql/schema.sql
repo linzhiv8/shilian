@@ -155,11 +155,12 @@ CREATE TABLE IF NOT EXISTS link (
   content_type        VARCHAR(32)  NULL,
   confidence          DOUBLE       NULL,
   needs_review        TINYINT      NOT NULL DEFAULT 0,
-  is_private          TINYINT      NOT NULL DEFAULT 0,  -- 1 = 跳过 AI，仅本地保存
+  -- status 只管「看过了没有」：unread / read。
+  -- 「用没用上」是下面那个 used 列——两件事拆开，见 V4__review.sql 的说明。
   status              VARCHAR(16)  NOT NULL DEFAULT 'unread',
+  used                TINYINT      NOT NULL DEFAULT 0,
   starred             TINYINT      NOT NULL DEFAULT 0,
   snapshot_text       MEDIUMTEXT   NULL,   -- 正文快照，防死链
-  content_hash        VARCHAR(64)  NULL,   -- 内容指纹，没变就不重新分析
   ai_raw              MEDIUMTEXT   NULL,   -- AI 原始输出的完整 JSON，用于精确计算用户修正
   analyze_status      VARCHAR(16)  NOT NULL DEFAULT 'done',
   ai_attempts         INT          NULL,

@@ -159,6 +159,13 @@ export default function App() {
    */
   const [editTarget, setEditTarget] = useState<LinkItem | null>(null);
   /**
+   * 从回顾里发起的补正文，补完把结果回塞给回顾视图的那张卡片。
+   *
+   * <p>seq 用时间戳而不是递增计数器，是为了让「同一条连补两次」也能触发
+   * ——React 的 effect 比的是引用，只放 item 的话第二次会漏。
+   */
+  const [reviewFixed, setReviewFixed] = useState<{ item: LinkItem; seq: number } | null>(null);
+  /**
    * 需要滚动定位并高亮的那条记录的 id。用完（滚到位 + 高亮 2 秒）自动清空。
    *
    * <p>两件事共用它：R-01「重复链接去看看那条」和 R-02「quick 存完定位到新记录」。
@@ -647,16 +654,32 @@ export default function App() {
     setPanelOpen(false);
     setFixTarget(null);
     setEditTarget(null);
-    // 刚存完就该看见它。刚才若在回顾/周报里，切回列表
-    setView("list");
+
+    /*
+     * 补正文是从回顾里发起的时候，补完留在回顾，不切回列表。
+     *
+     * 他是翻回顾翻到一半撞上「这条没抓到正文」才点的补，
+     * 把他扔回列表等于让他自己重新找一遍刚才翻到哪了。
+     * 结果通过 reviewFixed 回塞进那张卡片，原地就能看到补成了什么样。
+     */
+    const fixedFromReview = mode === "fix" && view === "review";
+    if (fixedFromReview) {
+      setReviewFixed({ item, seq: Date.now() });
+    } else {
+      // 刚存完就该看见它。刚才若在周报里，切回列表
+      setView("list");
+    }
+
     notify(
       mode === "fix"
-        ? "已用这次的分析结果替换"
+        ? fixedFromReview
+          ? "补好了，就是现在这个样子"
+          : "已用这次的分析结果替换"
         : mode === "edit"
           ? "改好了"
           : "已存入 · 分类和备注随时可以改",
     );
-    // 补正文可能把「已用」勾进用途（那是状态，服务端会归位），队列会变
+    // 补完正文、或状态变了，队列可能跟着变
     void refreshReviewCount();
   };
 
@@ -843,6 +866,8 @@ export default function App() {
               onToggleStar={toggleStar}
               onDelete={handleDelete}
               onMarkRead={handleMarkRead}
+              onFix={openFix}
+              fixedItem={reviewFixed}
               onExit={exitToList}
               notify={notify}
             />

@@ -11,5 +11,18 @@ package com.shilian.domain;
  * 存一份正文快照，两年后打开还能知道当初为什么收藏它。
  * 它同时是「AI 判断错了」时唯一能重新分析的材料。
  */
-public record AnalyzeOutcome(AnalyzeDraft draft, String aiRaw, String snapshotText) {
+public record AnalyzeOutcome(
+        AnalyzeDraft draft,
+        String aiRaw,
+        String snapshotText,
+        /**
+         * 站点自称的名字（og:site_name）。可以为 null——多数页面根本不写这个标签。
+         *
+         * <p>它一路传到保存，是为了填上 {@code link.site_name}。
+         * 以前这一截是断的：抓取阶段花了力气把它抽出来（见 ExtractService），
+         * 但没往下游带，于是那一列永远是 NULL——
+         * 抽了等于没抽，而且读代码的人会以为「站点名」这个功能做了。
+         */
+        String siteName
+) {
 }

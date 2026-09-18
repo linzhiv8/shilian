@@ -87,7 +87,16 @@ public class Migrations {
              * 下一个版本」，不能照需求文档预留。文档里批次 3 的脚本将来是 V4，
              * 那时候它排在 V3 之后照常执行，本条留在 V3 不动。
              */
-            new Migration(3, "email", "db/V3__email.sql", false)
+            new Migration(3, "email", "db/V3__email.sql", false),
+            /*
+             * V4 是批次 3（回顾流程收口）：把「已用」从 status 里拆成独立列。
+             *
+             * 版本号就是 4，因为库里现在到 3。需求文档里批次 3 原本排的是 V2，
+             * 那个编号已经作废——实际落地顺序是 admin(V2) → email(V3) → review(V4)。
+             * 照文档预留编号的话，这里会被误写成 2，而 2 已经被 V2 占了，
+             * 结果是脚本被静默跳过、结构缺一块且没有任何报错。
+             */
+            new Migration(4, "review", "db/V4__review.sql", false)
     );
 
     private final JdbcTemplate jdbc;

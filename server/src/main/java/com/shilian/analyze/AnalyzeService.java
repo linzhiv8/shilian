@@ -304,7 +304,7 @@ public class AnalyzeService {
                 completionTokens,
                 (System.nanoTime() - startedNanos) / 1_000_000);
 
-        return new AnalyzeOutcome(draft, aiRaw, page.text());
+        return new AnalyzeOutcome(draft, aiRaw, page.text(), page.siteName());
     }
 
     /*

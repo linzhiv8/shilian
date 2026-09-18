@@ -140,10 +140,13 @@ export default function LinkCard({ item, onToggleStar, onOpen, onDelete, onFix, 
             {item.purposes.slice(0, 2).map((p) => (
               <span key={p}>{purposeName(p)}</span>
             ))}
-            {item.status === "used" && (
+            {item.used && (
               /*
-               * 「已用」在服务端是 status 而不是 purpose（两者并存会出现
-               * 「用途显示已用但状态还是未读」的自相矛盾数据），所以单独渲染。
+               * 「已用」是独立的 used 字段，不是用途也不是状态。
+               *
+               * V4 之前它挂在 status 上，那时候这个角标意味着
+               * 「这条记录被锁进了某个状态，撤不回来」；现在它只是一个开关的当前值，
+               * 用户可以随手拨回去——角标该跟着消失，也确实会。
                */
               <span className="rounded-[3px] bg-sunken px-1.5 py-[1px] text-ink2">已用</span>
             )}

@@ -72,7 +72,13 @@ public class LinkController {
         LinkRepository.NewLink toSave = new LinkRepository.NewLink(
                 d.url(),
                 d.site(),
-                null,
+                /*
+                 * 以前这里是硬编码的 null，于是 link.site_name 永远是空的
+                 * ——ExtractService 费劲抽出来的 og:site_name 到这儿就断了。
+                 * 现在从分析产出里带过来。可以为 null（多数页面没写这个标签），
+                 * 这时候展示层照旧退回主机名。
+                 */
+                outcome.siteName(),
                 r.title(),
                 r.summary(),
                 r.summaryLong(),
@@ -92,8 +98,13 @@ public class LinkController {
 
         LinkItem saved = repo.insert(toSave);
 
+        /*
+         * V4 之前这里写的是 Map.of("status", "used")。现在「已用」是独立列，
+         * 写 used 而不是动 status：标已用不该顺手把「看过了别再推」也标上——
+         * 那是另一件事，用户没表态过。
+         */
         if (r.markedUsed()) {
-            saved = repo.patch(saved.id(), Map.of("status", "used")).orElse(saved);
+            saved = repo.patch(saved.id(), Map.of("used", true)).orElse(saved);
         }
 
         /*
@@ -201,7 +212,7 @@ public class LinkController {
                 .orElseThrow(() -> new NotFoundException("找不到这条记录"));
 
         if (r.markedUsed()) {
-            updated = repo.patch(id, Map.of("status", "used")).orElse(updated);
+            updated = repo.patch(id, Map.of("used", true)).orElse(updated);
         }
 
         // 同上：这次调用的账已经在 /{id}/reanalyze 那里记过了
@@ -265,8 +276,21 @@ public class LinkController {
         if (req.starred() != null) {
             changes.put("starred", req.starred());
         }
-        if (req.status() != null && List.of("unread", "read", "used").contains(req.status())) {
+        /*
+         * 合法取值只有 unread / read 两个了。'used' 从 V4 起不再是状态值，
+         * 它是独立的 used 列。这里如果还留着 'used'，
+         * 前端一个旧的调用就能把 status 写成库里不再存在的语义。
+         */
+        if (req.status() != null && List.of("unread", "read").contains(req.status())) {
             changes.put("status", req.status());
+        }
+        /*
+         * used 单独收一个开关，不走 status。
+         * 它和 status 的区别：status 是「还要不要再推给我」，
+         * used 是「我用没用上」——后者要能随手来回拨。
+         */
+        if (req.used() != null) {
+            changes.put("used", req.used());
         }
         if (Boolean.TRUE.equals(req.markOpened())) {
             changes.put("last_opened_at", RelativeTime.now());
@@ -316,8 +340,8 @@ public class LinkController {
 
     private static Resolved resolve(SaveLinkRequest req, AnalyzeDraft d) {
         // 用户在面板里可能把「已用」勾进用途里。它本质是状态不是用途，这里统一归位：
-        // 从 purposes 里摘掉，改成 status='used'。否则同一件事会有两个地方表达，
-        // 迟早出现「用途显示已用但状态还是未读」这种自相矛盾的数据。
+        // 从 purposes 里摘掉，改成写 used 列。否则同一件事会有两个地方表达，
+        // 迟早出现「用途显示已用但 used 还是 0」这种自相矛盾的数据。
         List<String> requestedPurposes = req.purposes() != null ? req.purposes() : d.purposes();
 
         return new Resolved(
@@ -332,7 +356,12 @@ public class LinkController {
                 pick(req.contentType(), d.contentType()),
                 req.confidence() != null ? req.confidence() : d.confidence(),
                 req.needsReview() != null ? req.needsReview() : d.needsReview(),
-                requestedPurposes.contains("used"));
+                /*
+                 * 以前这里读的是 requestedPurposes.contains("used")——
+                 * 前端把「已用」混在用途里提交，这里再摘出来。
+                 * 现在它是独立字段，前端直接给 used。
+                 */
+                Boolean.TRUE.equals(req.used()));
     }
 
     private AnalyzeOutcome requireDraft(String draftId) {

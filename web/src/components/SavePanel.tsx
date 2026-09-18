@@ -148,6 +148,13 @@ export default function SavePanel({
   const [noteIdx, setNoteIdx] = useState(1);
   const [domainKey, setDomainKey] = useState<DomainKey>("other");
   const [purposes, setPurposes] = useState<PurposeKey[]>([]);
+  /**
+   * 用没用上。V4 起它是独立的开关，不再是用途的一个选项。
+   *
+   * <p>默认值必须是 false 而不是「看情况」：新建时这条记录刚存下来，
+   * 说他「已经用上了」没有任何依据。编辑时由 {@code editLink.used} 带进来。
+   */
+  const [used, setUsed] = useState(false);
   const [tags, setTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState("");
 
@@ -353,6 +360,8 @@ export default function SavePanel({
       setNoteIdx(opts.includes(mine) ? opts.indexOf(mine) : 0);
       setDomainKey(d0.domainKey);
       setPurposes(d0.purposes);
+      // 编辑已有记录时把「已用」带进来，否则一进编辑面板这个开关就悄悄归零了
+      setUsed(editLink.used);
       setTags(d0.tags);
       return;
     }
@@ -429,6 +438,12 @@ export default function SavePanel({
         setNoteIdx(prepended ? 0 : d.noteOptions.length >= 2 ? 1 : 0);
         setDomainKey(d.domainKey);
         setPurposes(d.purposes);
+        /*
+         * 补正文是给「已存的那条」重跑分析，那条记录可能已经是「已用」了。
+         * 不把它带进来的话，用户一进补正文面板，这个开关就被悄悄拨回「没用过」——
+         * 而他这次只是来补正文的，压根没打算改这个。
+         */
+        setUsed(fixLink?.used ?? false);
         setTags(d.tags);
         setStep(STEPS.length);
         setPhase("ready");
@@ -500,6 +515,7 @@ export default function SavePanel({
           domainKey,
           purposes,
           tags,
+          used,
         });
         onSave(item, "edit");
       } catch (e) {
@@ -526,6 +542,7 @@ export default function SavePanel({
       contentType: draft.contentType,
       confidence: draft.confidence,
       needsReview: draft.needsReview,
+      used,
     };
     try {
       const item = fixing
@@ -1069,6 +1086,29 @@ export default function SavePanel({
                         );
                       })}
                     </div>
+                  </div>
+
+                  <div className="flex items-start gap-3">
+                    <span className="w-9 shrink-0 pt-[3px] text-[11.5px] text-ink3">已用</span>
+                    <button
+                      onClick={() => setUsed(!used)}
+                      /*
+                       * 一个真正的开关，不是单向按钮：点一下开、再点一下关。
+                       *
+                       * 它以前混在用途里（PURPOSES 的最后一项），那时候标了就撤不回来——
+                       * 因为服务端把「已用」写进了 status，而 status 同时还要表达
+                       * 「看过了别再推」，取消时无从判断该回到哪个。
+                       * V4 把两件事拆开之后，这才是一个能来回拨的开关。
+                       */
+                      className={cn(
+                        "rounded-md border px-2 py-[3px] text-[11.5px] transition-colors",
+                        used
+                          ? "border-accent bg-accentsoft font-medium text-accent"
+                          : "border-line text-ink2 hover:border-line-strong",
+                      )}
+                    >
+                      {used ? "用上了" : "还没用"}
+                    </button>
                   </div>
 
                   <div className="flex items-start gap-3">

@@ -9,20 +9,31 @@ import com.shilian.repo.handler.JsonListTypeHandler;
 import java.util.List;
 
 /**
- * {@code link} 表的实体。30 列。
+ * {@code link} 表的实体。29 列。
  *
  * <p><b>实体不是领域对象，两者刻意分开。</b>
- * {@code LinkItem}（domain 包）是「界面要的那几个字段」，只有 22 个，其中 3 个
+ * {@code LinkItem}（domain 包）是「界面要的那几个字段」，只有 23 个，其中 3 个
  * （{@code createdLabel} / {@code idleDays} / {@code monogram}）还是算出来的、
- * 库里根本没有；而这个实体是「表里有什么」，30 列一个不少。
+ * 库里根本没有；而这个实体是「表里有什么」，一列不少。
  *
- * <p>不合并的理由：这个实体里有 10 列是 {@code LinkItem} 用不到的
- * （{@code url_normalized} / {@code user_id} / {@code is_private} /
- * {@code snapshot_text} / {@code content_hash} / {@code ai_raw} /
+ * <p>不合并的理由：这个实体里有 9 列是 {@code LinkItem} 用不到的
+ * （{@code url_normalized} / {@code user_id} /
+ * {@code snapshot_text} / {@code ai_raw} /
  * {@code analyze_status} / {@code ai_attempts} / 两个 token 计数）。
  * 把它们塞进 {@code LinkItem} 会让「这个字段界面用不用得上」变得不可知；
  * 反过来，把算出来的 3 个字段塞进实体，会让「哪一列是真实存在的」变得不可知。
  * 转换集中在一处：{@code LinkRepository.toItem()}。
+ *
+ * <p><b>V4 删掉了 {@code content_hash} 一列</b>（见 {@code db/V4__review.sql}）。
+ * 它是设计阶段留下的，打算做「内容没变就不重新分析」，功能没做，
+ * 而且从来没有被写过——每一行的值都是 NULL。
+ * 这里同步删掉字段而不是标 {@code @TableField(exist = false)}——
+ * 后者看起来更省事，但它把「这列不存在」这件事藏进了一个注解里，
+ * 而下一次有人写 {@code new LinkEntity()} 再 insert 时，
+ * 报的错会是「Unknown column」，到那时谁也想不起还有一个注解。
+ * 让实体和表严格一一对应，错误就在编译期而不是运行期。
+ *
+ * <p>{@code is_private} 当初也在候选名单里，但没删，理由见那个字段的注释。
  */
 @TableName("link")
 public class LinkEntity {
@@ -71,7 +82,7 @@ public class LinkEntity {
     private Double confidence;
 
     /**
-     * 三个 {@code TINYINT} 列用 Boolean 而不是 Integer。
+     * 四个 {@code TINYINT} 列用 Boolean 而不是 Integer。
      *
      * <p>MySQL 的 {@code TINYINT(1)} 就是它的布尔类型，MyBatis 的
      * {@code BooleanTypeHandler} 走 {@code rs.getBoolean()/ps.setBoolean()}，
@@ -79,14 +90,31 @@ public class LinkEntity {
      */
     private Boolean needsReview;
 
+    /**
+     * 1 = 跳过 AI 直接存下来的（{@code POST /api/links/quick} 那条路）。
+     *
+     * <p><b>V4 差点删掉这一列，后来撤销了。</b>当时判断它是死列，
+     * 依据是「没有代码读写」——写是有的（{@code LinkRepository.insertQuick}），
+     * 只是没有查询读它。它记的是「这条记录是怎么来的」，有真实取值，
+     * 和 {@code content_hash}（从未被写过、恒为 NULL）不是一回事。
+     * 删列不可逆，而没想清楚就删，丢的是补不回来的信息。
+     */
     private Boolean isPrivate;
 
     private String status;
 
+    /**
+     * 用没用上。V4 从 {@code status} 里拆出来的，见 {@code db/V4__review.sql}。
+     *
+     * <p>和 {@code status} 的分工：{@code status} 是「看过了没有、还要不要再推给我」，
+     * 这一列是「我有没有真的用上」。两件事都能各自来回拨，互不影响——
+     * 混在一个列时，取消「已用」不知道该回 unread 还是 read，只能二选一地猜。
+     */
+    private Boolean used;
+
     private Boolean starred;
 
     private String snapshotText;
-    private String contentHash;
     private String aiRaw;
     private String analyzeStatus;
     private Integer aiAttempts;
@@ -164,14 +192,14 @@ public class LinkEntity {
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; }
 
+    public Boolean getUsed() { return used; }
+    public void setUsed(Boolean used) { this.used = used; }
+
     public Boolean getStarred() { return starred; }
     public void setStarred(Boolean starred) { this.starred = starred; }
 
     public String getSnapshotText() { return snapshotText; }
     public void setSnapshotText(String snapshotText) { this.snapshotText = snapshotText; }
-
-    public String getContentHash() { return contentHash; }
-    public void setContentHash(String contentHash) { this.contentHash = contentHash; }
 
     public String getAiRaw() { return aiRaw; }
     public void setAiRaw(String aiRaw) { this.aiRaw = aiRaw; }

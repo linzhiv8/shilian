@@ -21,6 +21,14 @@ public record PatchLinkRequest(
         List<String> tags,
         Boolean starred,
         String status,
+        /**
+         * 用没用上。V4 起它是独立列，不再是 status 的取值。
+         *
+         * <p>和 {@code status} 分开收，是因为两者的撤销方式不同：
+         * {@code status} 是「还要不要再推给我」这种一次性的表态，
+         * 而这个是随手来回拨的开关，前端会频繁地只提交这一个字段。
+         */
+        Boolean used,
         /** 前端打开链接时置 true，用于「多久没看了」的判断。 */
         Boolean markOpened
 ) {

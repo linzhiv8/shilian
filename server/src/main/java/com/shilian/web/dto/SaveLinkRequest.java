@@ -28,6 +28,14 @@ public record SaveLinkRequest(
         List<String> tags,
         String contentType,
         Double confidence,
-        Boolean needsReview
+        Boolean needsReview,
+
+        /**
+         * 存下来的时候就已经用上了。V4 起「已用」是独立列，不再靠
+         * 「往 purposes 里塞一个 used」这种旁门表达——
+         * 那条路的副作用是：purposes 是 AI 判的、会被引擎当分类用，
+         * 塞一个状态值进去等于往分类里混了一个不是分类的东西。
+         */
+        Boolean used
 ) {
 }

@@ -165,6 +165,18 @@ public class LinkRepository {
 
     /* ────────────── 写入 ────────────── */
 
+    /*
+     * analyze_status 的两个取值。
+     *
+     * 以前这两处是散在代码里的裸字符串 'done' / 'pending'，
+     * 而这一列当时没有任何读者——写错了也没人会发现。
+     * 现在它通过 LinkItem 暴露给了界面（用来区分两种「待补」），
+     * 值就得有个能查到定义的地方，否则改一处漏一处，
+     * 界面会开始显示第三种谁也不认识的状态。
+     */
+    public static final String ANALYZE_DONE = "done";
+    public static final String ANALYZE_PENDING = "pending";
+
     /** 保存时要落库的全部字段。来自 AnalyzeOutcome + 用户在前端确认后的编辑。 */
     public record NewLink(
             String url,
@@ -236,7 +248,7 @@ public class LinkRepository {
         e.setStarred(false);
         e.setSnapshotText(in.snapshotText());
         e.setAiRaw(in.aiRaw());
-        e.setAnalyzeStatus("done");
+        e.setAnalyzeStatus(ANALYZE_DONE);
         e.setAiAttempts(in.aiAttempts());
         e.setPromptTokens(in.promptTokens());
         e.setCompletionTokens(in.completionTokens());
@@ -303,7 +315,7 @@ public class LinkRepository {
         e.setNeedsReview(true);
         e.setStatus("unread");
         e.setStarred(false);
-        e.setAnalyzeStatus("pending");
+        e.setAnalyzeStatus(ANALYZE_PENDING);
         e.setCreatedAt(now);
 
         try {
@@ -804,7 +816,12 @@ public class LinkRepository {
     private static final List<String> EDITABLE = List.of(
             "title", "summary_short",
             "note", "domain_category", "purpose_categories", "tags",
-            "starred", "status", "last_opened_at");
+            /*
+             * used 也在白名单里——V4 之后它是独立列，前端要能直接拨这个开关。
+             * 它和 status 的区别是：status 只有服务端和「标已读」会动，
+             * 而 used 是用户随手来回拨的，所以它必须走和 starred 一样的路径。
+             */
+            "starred", "status", "used", "last_opened_at");
 
     /**
      * 改动时需要留痕的字段 → correction 表里的 field_name。
@@ -1007,10 +1024,22 @@ public class LinkRepository {
         String url = e.getUrl();
         String createdAt = e.getCreatedAt();
         String lastOpenedAt = e.getLastOpenedAt();
+        /*
+         * 站点名优先用 og:site_name（站点自称的名字），没抓到才退回主机名。
+         *
+         * 「mp.weixin.qq.com」和「微信公众号」是同一回事，
+         * 但后者才是人认得的那一个，而存网址的人半年后要靠这一行想起这是哪。
+         *
+         * 退回主机名而不是留空：绝大多数页面根本不写 og:site_name，
+         * 留空的话这一列十次有九次是空白，等于没有。
+         */
+        String site = e.getSiteName() == null || e.getSiteName().isBlank()
+                ? e.getDomain()
+                : e.getSiteName();
         return new LinkItem(
                 e.getId(),
                 url,
-                e.getDomain(),
+                site,
                 e.getTitle(),
                 e.getSummaryShort(),
                 e.getSummaryLong(),
@@ -1024,8 +1053,10 @@ public class LinkRepository {
                 RelativeTime.idleDays(lastOpenedAt != null ? lastOpenedAt : createdAt),
                 Boolean.TRUE.equals(e.getStarred()),
                 e.getStatus(),
+                Boolean.TRUE.equals(e.getUsed()),
                 e.getConfidence() == null ? 0.0 : e.getConfidence(),
                 Boolean.TRUE.equals(e.getNeedsReview()),
+                e.getAnalyzeStatus(),
                 Urls.monogram(url),
                 createdAt,
                 lastOpenedAt);

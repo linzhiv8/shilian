@@ -150,6 +150,14 @@ export interface SavePayload {
   contentType: string;
   confidence: number;
   needsReview: boolean;
+  /**
+   * 存下来的时候就已经用上了。V4 起「已用」是独立字段。
+   *
+   * <p>以前前端靠往 {@code purposes} 里塞一个 "used" 来表达它，
+   * 服务端再摘出来——那条路已经封了（"used" 不是合法用途，会被过滤掉），
+   * 现在走这里。
+   */
+  used: boolean;
 }
 
 export const saveLink = (payload: SavePayload) =>
@@ -299,7 +307,10 @@ export interface PatchPayload {
   purposes?: PurposeKey[];
   tags?: string[];
   starred?: boolean;
-  status?: "unread" | "read" | "used";
+  /** V4 起只有两个取值：「已用」走了下面的 used，不再占用 status。 */
+  status?: "unread" | "read";
+  /** 用没用上。可以来回拨——这是它从 status 里拆出来的唯一理由。 */
+  used?: boolean;
   markOpened?: boolean;
 }
 

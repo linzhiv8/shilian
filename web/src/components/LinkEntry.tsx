@@ -102,10 +102,10 @@ export default function LinkEntry({
             <span key={p} className="text-ink3">· {purposeName(p)}</span>
           ))}
           {/*
-            「已用」在服务端是 status 而不是 purpose（两者并存会出现
-            「用途显示已用但状态还是未读」的自相矛盾数据），所以这里单独渲染。
+            「已用」是独立的 used 字段，和用途、状态都无关，所以单独渲染。
+            它现在是个能来回拨的开关，见 types.ts 里 LinkItem.used 的注释。
           */}
-          {item.status === "used" && (
+          {item.used && (
             <span className="rounded-[3px] bg-sunken px-1.5 py-px text-ink2">已用</span>
           )}
           {item.idleDays !== null && item.idleDays >= REVIEW_DAYS && (
@@ -125,7 +125,13 @@ export default function LinkEntry({
               className="flex items-center gap-1 text-amber-700 transition-opacity hover:opacity-70 dark:text-amber-500"
             >
               <ClipboardPaste size={10.5} />
-              正文没抓到，补上
+              {/*
+                两种「待补」说的是两件事，文案不能共用：
+                pending 是压根没分析过（跳过 AI 直接存的那批），
+                它缺的是整次分析；done 才是抓正文失败。
+                统一说「正文没抓到」的话，跳过 AI 存的那批会看到一句冤枉它的原因。
+              */}
+              {item.analyzeStatus === "pending" ? "还没分析过，补上" : "正文没抓到，补上"}
             </button>
           )}
         </div>
