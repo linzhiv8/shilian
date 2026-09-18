@@ -71,6 +71,72 @@ public interface AppUserMapper extends BaseMapper<AppUserEntity> {
     }
 
     /**
+     * 管理端的用户搜索。
+     *
+     * <p><b>只能用 Wrapper，不能用 {@code LIKE} 拼字符串。</b>
+     * 关键词是用户输入的，直接拼进 SQL 就是一个注入点；
+     * {@code apply()} 会把参数转成占位符，通配符由下面的
+     * {@link #like} 转义掉（不转义的话，搜 {@code 100%} 会变成「以 100 开头」）。
+     *
+     * <p><b>{@code LIMIT / OFFSET} 直接拼数字而不是占位符</b>：这两个值是
+     * {@code int}，调用方已经夹过上下限，拼进去没有注入风险；
+     * 而 MySQL 对 {@code LIMIT ?} 的支持在某些版本上有坑，不如直接拼。
+     *
+     * @param keyword 邮箱 / 用户名 / 昵称的模糊匹配，null 或空表示不筛
+     */
+    default List<AppUserEntity> searchPage(String keyword, int offset, int limit) {
+        LambdaQueryWrapper<AppUserEntity> w = new LambdaQueryWrapper<>();
+        if (keyword != null && !keyword.isBlank()) {
+            String like = like(keyword);
+            w.and(q -> q
+                    .apply("username LIKE {0} ESCAPE '!'", like)
+                    .or().apply("nickname LIKE {0} ESCAPE '!'", like)
+                    .or().apply("email LIKE {0} ESCAPE '!'", like));
+        }
+        w.orderByDesc(AppUserEntity::getCreatedAt);
+        w.last("LIMIT " + limit + " OFFSET " + offset);
+        return selectList(w);
+    }
+
+    /** 同上条件的总数。和 {@link #searchPage} 共用同一套条件，别在两处各写一遍。 */
+    default int countByKeyword(String keyword) {
+        LambdaQueryWrapper<AppUserEntity> w = new LambdaQueryWrapper<>();
+        if (keyword != null && !keyword.isBlank()) {
+            String like = like(keyword);
+            w.and(q -> q
+                    .apply("username LIKE {0} ESCAPE '!'", like)
+                    .or().apply("nickname LIKE {0} ESCAPE '!'", like)
+                    .or().apply("email LIKE {0} ESCAPE '!'", like));
+        }
+        return Math.toIntExact(selectCount(w));
+    }
+
+    /**
+     * 把用户输入包成 LIKE 模式，并转义掉它自己带的通配符。
+     *
+     * <p>转义符用 {@code !} 而不是默认的反斜杠，理由见
+     * {@code LinkRepository.escapeLike}——那三层数反斜杠的坑这里一样存在。
+     */
+    private static String like(String keyword) {
+        String escaped = keyword.trim()
+                .replace("!", "!!")
+                .replace("%", "!%")
+                .replace("_", "!_");
+        return "%" + escaped + "%";
+    }
+
+    /**
+     * 禁用 / 恢复账号。
+     *
+     * <p>写成单列 UPDATE 而不是 {@code updateById} 传实体：
+     * 后者「塞什么字段就改什么字段」，而这里要表达的语义是
+     * 「只改状态这一个字段」——用户表上其他列（密码哈希、角色、失败计数）
+     * 都不该被这次操作碰到。
+     */
+    @Update("UPDATE app_user SET status = #{status} WHERE id = #{id}")
+    int updateStatus(@Param("id") String id, @Param("status") String status);
+
+    /**
      * 记一次登录失败。
      *
      * <p><b>计数必须在 SQL 里自增</b>，不能「读出来 +1 再写回」：

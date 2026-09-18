@@ -2,8 +2,10 @@ package com.shilian.config;
 
 import com.shilian.domain.port.Clock;
 import com.shilian.domain.user.User;
+import com.shilian.infrastructure.security.DisabledUserFilter;
 import com.shilian.infrastructure.security.ShilianPrincipal;
 import com.shilian.repo.UserRepository;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -17,6 +19,7 @@ import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.context.SecurityContextHolderFilter;
 
 /**
  * 安全配置。
@@ -36,6 +39,27 @@ import org.springframework.security.web.SecurityFilterChain;
 @Configuration
 @EnableWebSecurity
 public class SecurityConfig {
+
+    /**
+     * 关掉 Spring Boot 对这个过滤器的自动注册。
+     *
+     * <p><b>为什么要关。</b>
+     * Spring Boot 会把每一个 {@code Filter} 类型的 bean 再注册到 Servlet 容器里一次。
+     * 于是它会被跑两遍：一次在 Spring Security 的链里（我们要的位置，
+     * 在 {@code SecurityContextHolderFilter} 之后），一次在所有链之外。
+     *
+     * <p>跑两遍在这里不会出错——{@code OncePerRequestFilter} 会按一个请求属性
+     * 跳过第二次。但那是靠一个隐式的机制兜着：哪天有人把它换成
+     * 普通的 {@code Filter} 实现，「每请求一次查库」就会静默变成两次。
+     * 显式关掉，让「它只在安全链里」这件事写在配置里而不是靠巧合。
+     */
+    @Bean
+    public FilterRegistrationBean<DisabledUserFilter> disabledUserFilterRegistration(
+            DisabledUserFilter filter) {
+        FilterRegistrationBean<DisabledUserFilter> reg = new FilterRegistrationBean<>(filter);
+        reg.setEnabled(false);
+        return reg;
+    }
 
     @Bean
     public PasswordEncoder passwordEncoder() {
@@ -62,9 +86,17 @@ public class SecurityConfig {
         return new ProviderManager(provider);
     }
 
+    /**
+     * @param disabledUserFilter 每个已认证请求查一次账号状态。
+     *                           必须挂在 {@code SecurityContextHolderFilter}
+     *                           <b>之后</b>——会话里的主体是在那个过滤器里被装载的，
+     *                           挂早了取到的主体是空的，这个过滤器会变成永久的空转。
+     */
     @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain filterChain(HttpSecurity http,
+                                           DisabledUserFilter disabledUserFilter) throws Exception {
         http
+                .addFilterAfter(disabledUserFilter, SecurityContextHolderFilter.class)
                 .csrf(csrf -> csrf.disable()) // 见类注释：阶段 5 配合前端一起开
                 .authorizeHttpRequests(a -> a
                         /*

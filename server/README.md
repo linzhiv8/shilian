@@ -105,9 +105,9 @@ src/main/java/com/shilian/
 │   ├── ValidationService 校验模型输出（提示词是建议，这里才是保证）
 │   ├── AnalyzeService    编排 + 校验不过自动重试
 │   ├── WeeklyDigestService 周报：统计 + AI 摘要 + 按指纹作废的缓存
-│   └── CorrectionsSource 用户历史修正的提供方（接口，便于测试）
+│   └── CorrectionsFeed  用户历史修正的提供方（拼成提示词里的一块）
 ├── domain/            枚举与数据载体
-├── repo/              LinkRepository（JdbcTemplate）
+├── repo/              仓储（MyBatis-Plus）+ entity/ mapper/ handler/
 ├── util/              Urls、RelativeTime
 └── web/               Controller、DraftStore、异常出口
 ```
@@ -117,16 +117,19 @@ src/main/java/com/shilian/
 以前有两个端到端脚本（一个走完整分析流程、一个起干净库打一遍接口），**都已删掉**
 ——它们的前提都是「有一个可以随便造的库」，换成 MySQL 之后不成立了。
 
-所以现在**没有任何自动化验证**：单元测试（`src/test/`）已经删掉，
-也没有「起一个干净实例、把接口全打一遍」的脚本。
-「SQL 到底能不能执行」「多用户隔离有没有漏」「迁移能不能重跑」
-这三类只能手工验。
+单元测试（`src/test/`）也在 2026-09-18 上线前清理时删掉，之后没有恢复
+（中间短暂立起过一套冒烟基座，当天按「工程保持干净」的要求又删了，`spring-boot-starter-test`
+依赖也一并移除）。**所以现在仍然没有任何自动化验证**：
+「SQL 到底能不能执行」「多用户隔离有没有漏」「迁移能不能重跑」「限流边界对不对」
+这几类只能手工验。迭代需求里的 **R-09** 就是补这一块，目前**未实施**。
 
 ## 几个关键决定
 
-**用 Spring JDBC 而不是 MyBatis-Plus。** 七张表，真正需要的是
-「按用途过滤」「回顾队列」这类定制查询。MyBatis-Plus 的价值在省 CRUD 样板代码，
-这里省不下多少，反而多担一层 SQL 方言适配的风险。
+**数据访问走 MyBatis-Plus 3.5.17**（2026-09-18 从手写 JdbcTemplate 迁过来）。
+`link` 表的每一条查询都必须带 `user_id` 过滤，所以那边刻意**手写 SQL**，
+让过滤条件留在 `WHERE` 里肉眼可见；`app_user` 这种标准单主键表才用
+`BaseMapper` / `LambdaQueryWrapper`。`Migrations`（建表脚本）和 `StartupSelfCheck`
+仍用 JdbcTemplate——MyBatis-Plus 是 ORM，不管 DDL。
 
 **HikariCP 连接池开 8。** 按「单人自用 + 偶尔几台设备」估的，够用且不会把
 MySQL 的 `max_connections` 吃掉。`max-lifetime` 必须短于 MySQL 的 `wait_timeout`
@@ -225,7 +228,8 @@ DeepSeek 的上下文缓存按「前缀完全一致」命中，所以启动时�
 ## 还没做 / 已知欠账
 
 - **没有任何自动化测试。** `src/test/` 已经删掉，所以「SQL 到底能不能执行」
-  「多用户隔离有没有漏」「迁移能不能重跑」这三类只能靠手工验。
+  「多用户隔离有没有漏」「迁移能不能重跑」「限流边界对不对」这几类只能靠手工验。
+  补这一块是迭代需求的 **R-09**（目前未实施）。
 - **全文检索用的是 `LIKE`**，中文长文本上到几千条后应该换 MySQL 的
   FULLTEXT + ngram 分词器。
 - **回顾队列的池子到几千条时**，`ORDER BY RAND()` 会给每行算一个随机数、等于全表扫描。

@@ -156,6 +156,24 @@ export const saveLink = (payload: SavePayload) =>
   request<LinkItem>("/links", { method: "POST", body: JSON.stringify(payload) });
 
 /**
+ * 跳过 AI，直接把网址存下来。**分析失败时的兜底出口。**
+ *
+ * <p>这是产品最核心的承诺：丢一个网址进来，最差也得能存住。熔断 / 没配 Key /
+ * 超时这三种情况下分析一定失败，但那不该等于「这个网址就丢了」——先以「待补」
+ * 落库，等模型恢复、或者用户拿到正文了再补。
+ *
+ * <p>不传 title 就是一条光秃秃的网址，列表里用 URL 当标题显示；
+ * 用户手上恰好有标题时带一个，能让这条在列表里认得出。
+ *
+ * @param title 可选。用户手动给一个标题，避免存进去一条认不出来的记录。
+ */
+export const quickSave = (url: string, title?: string) =>
+  request<LinkItem>("/links/quick", {
+    method: "POST",
+    body: JSON.stringify(title?.trim() ? { url, title } : { url }),
+  });
+
+/**
  * 给一条**已存**的记录重跑分析。**不改库**，返回草稿等用户确认。
  *
  * <p>补上了全应用最后一个「用户遇到问题却无解」的场景：之前只有新收藏时能贴正文，
@@ -347,7 +365,23 @@ export interface AuthUser {
   nickname: string;
   email: string | null;
   displayName: string;
+  /**
+   * 角色。`"user"` 是默认，`"admin"` 才能进管理端。
+   *
+   * <p>写成可选而不是必填：管理端是后端这一轮才加的东西，
+   * 而前端可能比后端先上线（或反过来）。取不到就当普通用户——
+   * 宁可让管理员一时看不到入口，也不能让普通人看见一个自己进不去的入口。
+   */
+  role?: string;
 }
+
+/**
+ * 判断一个人是不是管理员。**全应用只此一处定义。**
+ *
+ * 各处都写 `u.role === "admin"` 的话，将来加第二个有特权的角色时
+ * 就要改好几个地方，漏一处就是一个越权口子。
+ */
+export const isAdmin = (u: AuthUser | null | undefined): boolean => u?.role === "admin";
 
 /**
  * 取当前登录的人。没登录时后端返回 401。
@@ -393,4 +427,294 @@ export const changePassword = (oldPassword: string, newPassword: string) =>
     method: "POST",
     body: JSON.stringify({ oldPassword, newPassword }),
   });
+
+/* ────────────── 标签（R-05） ────────────── */
+
+export interface TagItem {
+  name: string;
+  /** 有多少条记录带着这个标签 */
+  count: number;
+}
+
+/**
+ * 全部标签及其条数。**服务端算的**，不从本地 links 自己数。
+ *
+ * 标签的增删改是跨行读改写（一条 SQL 动几十行的 JSON 数组），
+ * 只能由服务端做；既然管理走服务端，这份清单也从同一个地方来，
+ * 免得「chips 上说 5 条、改完说动了 7 条」这种对不上。
+ */
+export const listTags = () => request<TagItem[]>("/tags");
+
+/** 改名字 / 合并 / 删除的返回：这次动了多少条记录 */
+export interface TagMutationResult {
+  affected: number;
+}
+
+/**
+ * 给标签改名。
+ *
+ * 服务端保证目标名不存在时才改（撞上已有名字会报错）——前端这里也拦一道，
+ * 因为「合并」和「改名撞名」是两种用户意图，不该由一个错误码去猜。
+ */
+export const renameTag = (from: string, to: string) =>
+  request<TagMutationResult>("/tags/rename", {
+    method: "POST",
+    body: JSON.stringify({ from, to }),
+  });
+
+/**
+ * 把几个标签并成一个。
+ *
+ * 服务端去重后再写回，所以「合并」不会产生重复标签——这也是它必须走服务端的原因：
+ * 前端一条条 PATCH 过去，中途失败一半就会留下一半改了、一半没改的数据。
+ */
+export const mergeTags = (sources: string[], target: string) =>
+  request<TagMutationResult>("/tags/merge", {
+    method: "POST",
+    body: JSON.stringify({ sources, target }),
+  });
+
+/** 删掉一个标签。只摘标签，不动记录本身。 */
+export const deleteTag = (name: string) =>
+  request<TagMutationResult>("/tags/delete", {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+
+/* ────────────── 导出（R-07） ────────────── */
+
+export type ExportFormat = "json" | "html";
+
+const EXPORT_EXT: Record<ExportFormat, string> = { json: "json", html: "html" };
+
+/**
+ * 从 `Content-Disposition` 里取文件名。
+ *
+ * 两种写法都要认：`filename="x.json"` 和 RFC 5987 的 `filename*=UTF-8''%E6%8B%BE...`。
+ * 中文文件名只能靠后者带过来，漏掉它的话用户下载下来会是一串百分号。
+ * 取不到就返回 null，由调用方兜一个本地生成的名字。
+ */
+function filenameFromDisposition(header: string | null): string | null {
+  if (!header) return null;
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(header);
+  if (star?.[1]) {
+    try {
+      return decodeURIComponent(star[1]);
+    } catch {
+      // 解码失败就往下走，试普通的 filename=
+    }
+  }
+  const plain = /filename="([^"]+)"/i.exec(header) ?? /filename=([^;]+)/i.exec(header);
+  const name = plain?.[1]?.trim();
+  return name ? name : null;
+}
+
+/** 本地兜底文件名用的时间戳，形如 20260918-2130 */
+function stamp(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+}
+
+/**
+ * 导出并下载。**走 blob，不是 `window.open`。**
+ *
+ * <p>原因是这个请求必须带会话 cookie：`window.open` 打开的是一个浏览器级的新导航，
+ * 未登录时会拿到一个登录页的 HTML 并把它当成文件内容存下来——用户拿到一个
+ * 打不开的「导出文件」，还以为导出坏了。走 fetch 才能读到 401/404 并如实报出来。
+ *
+ * <p>整个响应先在内存里成一个 blob 再交给 `<a download>`，
+ * 所以几百条的量级没有问题；真到了几万条要改成服务端生成 + 预签名下载。
+ *
+ * @returns 最终存下来的文件名，给调用方提示用户「存到哪了」
+ */
+export async function downloadExport(format: ExportFormat): Promise<string> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/export?format=${format}`, { credentials: "include" });
+  } catch {
+    throw offlineError();
+  }
+
+  if (!res.ok) {
+    // 401 = 会话过期；404 = 后端对非管理员/越权的约定返回。
+    // 这两种都不是「导出功能坏了」，得说清楚是哪一种，否则用户会去重启服务。
+    throw new ApiError(
+      res.status,
+      res.status === 401
+        ? "登录状态已过期，请重新登录后再导出"
+        : res.status === 404
+          ? "没有权限导出"
+          : `导出失败（HTTP ${res.status}）`,
+    );
+  }
+
+  const blob = await res.blob();
+  const filename =
+    filenameFromDisposition(res.headers.get("Content-Disposition")) ??
+    `拾链-${stamp()}.${EXPORT_EXT[format]}`;
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  // 不在文档里的 <a> 在部分浏览器上点不动，所以先挂上去再点
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  /*
+   * 必须释放，否则这个 blob 会一直占着内存到刷新为止。
+   * 但不能紧接着同步 revoke —— 下载还没真正开始就把 URL 掐断的话，
+   * 有的浏览器会存出一个 0 字节的文件。让到下一个 tick 再释放。
+   */
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+
+  return filename;
+}
+
+/* ────────────── 管理端（R-19 / R-20） ────────────── */
+
+/** 分页结果的统一形状。管理端的两个列表都是它。 */
+export interface Page<T> {
+  items: T[];
+  total: number;
+  page: number;
+  size: number;
+}
+
+export type UserStatus = "active" | "disabled";
+
+export interface AdminUser {
+  id: string;
+  username: string;
+  /** 昵称。选填——没填就是 null，那时候界面上退回显示用户名 */
+  nickname: string | null;
+  email: string | null;
+  role: string;
+  status: UserStatus;
+  /** 注册时间。后端可能给 null（老账号没记） */
+  createdAt: string | null;
+  /** 最后登录。同上，从来没登录过就是 null */
+  lastLoginAt: string | null;
+  linkCount: number;
+  /** AI 调用次数（R-15 入账之后才有意义） */
+  aiCalls: number;
+  /**
+   * AI 用量。**分开存，不存合计**：prompt 是输入成本、completion 是输出成本，
+   * 两者单价不同，合成一个数就看不出钱花在哪一边。
+   * 界面要「总量」时自己相加，见 {@link AdminView} 的 tokens 列。
+   */
+  promptTokens: number;
+  completionTokens: number;
+}
+
+/**
+ * 用户列表。**非管理员会拿到 404**（沿用全站约定：403 等于确认这个资源存在，
+ * 而「有没有管理端」这件事不该向普通人确认）。
+ */
+export const listAdminUsers = (q: string, page: number, size: number) =>
+  request<Page<AdminUser>>(
+    `/admin/users?q=${encodeURIComponent(q)}&page=${page}&size=${size}`,
+  );
+
+/** 禁用 / 恢复一个账号。返回改动后的用户，前端可以直接回填那一行。 */
+export const setUserStatus = (id: string, status: UserStatus) =>
+  request<AdminUser>(`/admin/users/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  });
+
+export interface AuditEntry {
+  id: string;
+  /** 没登录的人（比如登录失败）没有 userId */
+  userId: string | null;
+  username: string | null;
+  /** 英文枚举，见 {@link AUDIT_ACTIONS} */
+  action: string;
+  /** 动作的对象，比如被删的链接 id */
+  target: string | null;
+  /**
+   * 这次操作成了没有：success / failure / denied。
+   *
+   * 和 {@link detail} 是两个维度，不是一个东西的两版命名：
+   * result 回答「成了没有」，detail 回答「为什么」。
+   * 混进 detail 里以后「把所有失败的记录筛出来」就没法做了——
+   * 只能拿文本去 LIKE，而失败原因的措辞是会变的。
+   */
+  result: string | null;
+  /** 一句话补充信息（比如失败原因）。没有就是 null */
+  detail: string | null;
+  ip: string | null;
+  createdAt: string;
+}
+
+/**
+ * 审计动作的中英文名对照。
+ *
+ * 存的是英文枚举（稳定、好查），**给用户看的一律走 {@link auditActionName} 翻译成中文**——
+ * 直接把 `LOGIN_OK` 摆在界面上等于没记。
+ *
+ * <p>这张表只放**后端真的会记**的动作（R-20 的审计范围：登录成功 / 失败、改密、
+ * 删链接、禁用 / 恢复账号、越权尝试；密码重置 R-08 还没做，所以也不在里面）。
+ *
+ * 不要往里加「以后可能会记」的动作：下拉里多一个选项，等于向看这张表的人
+ * 声明后端在记这件事——而后端并没有。他想查「谁注册了」时会来这里找，找不到，
+ * 再回头翻一遍代码才知道这张表在骗人。一张写着「有」但实际没有的表，比没有更糟。
+ *
+ * <p>认不出的动作会原样返回，不会显示成空白——后端以后加新动作时，
+ * 界面至少还能看出发生了什么。
+ */
+export const AUDIT_ACTIONS: Record<string, string> = {
+  LOGIN_OK: "登录成功",
+  LOGIN_FAIL: "登录失败",
+  PASSWORD_CHANGE: "改密码",
+  LINK_DELETE: "删链接",
+  ADMIN_DISABLE: "禁用账号",
+  ADMIN_ENABLE: "恢复账号",
+  ADMIN_ACCESS_DENIED: "越权访问管理端",
+};
+
+/** 审计动作 → 中文。认不出就原样返回，绝不显示空白。 */
+export const auditActionName = (action: string): string =>
+  AUDIT_ACTIONS[action] ?? action;
+
+/**
+ * 审计结果的取值 → 中文。
+ *
+ * 只有后端 {@code AuditService} 里真的会写的那三个值，和动作表一个道理：
+ * 不预填「以后可能会有」的结果。
+ */
+export const AUDIT_RESULTS: Record<string, string> = {
+  success: "成功",
+  failure: "失败",
+  denied: "被拒",
+};
+
+/** 审计结果 → 中文。认不出（含 null / 空）就原样返回，绝不显示空白。 */
+export const auditResultName = (result: string | null): string =>
+  (result && AUDIT_RESULTS[result]) || result || "";
+
+/**
+ * 审计日志。同样：非管理员 404。
+ *
+ * @param result 按结果筛，取值见 {@link AUDIT_RESULTS}；空串表示不筛。
+ *
+ * <p>结果之所以是个独立的筛选维度，而不是「在详情里搜失败两个字」：
+ * 翻这张表的人十有八九在找「哪次没成」——谁在反复试密码、谁被拦在管理端外面。
+ * 只能按动作筛的话，想看失败得把每个动作都翻一遍，那恰好是最费眼睛的做法。
+ * 而拿详情的文案去 LIKE 匹配撑不住：失败原因的措辞是会改的。
+ */
+export const listAudit = (
+  userId: string,
+  action: string,
+  result: string,
+  page: number,
+  size: number,
+) => {
+  const sp = new URLSearchParams({ page: String(page), size: String(size) });
+  if (userId) sp.set("userId", userId);
+  if (action) sp.set("action", action);
+  if (result) sp.set("result", result);
+  return request<Page<AuditEntry>>(`/admin/audit?${sp.toString()}`);
+};
 

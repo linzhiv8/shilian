@@ -23,6 +23,15 @@ public class AppUserEntity {
     private String nickname;
     private String status;
 
+    /*
+     * 角色。V2 迁移加进来的列，默认 'user'。
+     *
+     * 只有 'user' 和 'admin' 两个取值，而且判断一律收敛在 User.isAdmin() 里——
+     * 不在这里加 List 之类更花哨的结构：个位数用户的产品上，多一种角色就多一条
+     * 没人走过的分支，而没人走过的分支等于没测过的分支。
+     */
+    private String role;
+
     /** 连续登录失败次数。在 SQL 里自增，见 {@code AppUserMapper.recordFailure}。 */
     private Integer failedAttempts;
 
@@ -49,6 +58,9 @@ public class AppUserEntity {
 
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; }
+
+    public String getRole() { return role; }
+    public void setRole(String role) { this.role = role; }
 
     public Integer getFailedAttempts() { return failedAttempts; }
     public void setFailedAttempts(Integer failedAttempts) { this.failedAttempts = failedAttempts; }

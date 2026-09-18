@@ -12,7 +12,7 @@
 --
 -- 〇、⚠ 怎么执行这个文件（这个坑踩过）
 --
--- 它是**多条语句**（7 个 CREATE TABLE）。所以：
+-- 它是**多条语句**（8 个 CREATE TABLE）。所以：
 --
 --   · **应用启动时会自动执行它**（Migrations → Spring 的 ScriptUtils，会正确拆分）。
 --     也就是说你不需要手工跑它：建好库和账号就够了，表由应用建。
@@ -107,6 +107,10 @@ CREATE TABLE IF NOT EXISTS app_user (
   password_hash   VARCHAR(255) NULL,
   nickname        VARCHAR(64)  NULL,
   status          VARCHAR(16)  NOT NULL DEFAULT 'active',
+  -- 角色。只有 'user' / 'admin' 两个取值（代码侧 User.ROLE_* 定义）。
+  -- 只有 admin 能进管理端。刻意不做「第一个注册的人自动成为管理员」——
+  -- 谁是管理员由一条显式 UPDATE 决定。
+  role            VARCHAR(16)  NOT NULL DEFAULT 'user',
   -- 登录失败计数与锁定时点。放库里而不是内存：
   -- 内存方案一重启就清零，等于给攻击者一个「重启即解锁」的口子。
   failed_attempts INT          NOT NULL DEFAULT 0,
@@ -187,6 +191,33 @@ CREATE TABLE IF NOT EXISTS ai_log (
   PRIMARY KEY (id),
   KEY idx_ai_log_user (user_id, created_at),
   KEY idx_ai_log_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+/* ────────────── 审计日志 ────────────── */
+
+-- 「谁在什么时候做了什么」。管理端按用户 / 动作查它。
+--
+-- 刻意**不加外键**：审计记录的生命期不该挂在 app_user 上。
+-- 用户被删掉（将来可能有这个操作）之后，他做过的事仍然要能查到——
+-- 那正是审计存在的理由。所以 username 在这里冗余存一份快照：
+-- 只存 user_id 的话，用户没了之后这条记录就只剩一个看不懂的 id。
+--
+-- 同理，detail 存的是当时的文字说明而不是外键引用，
+-- 免得「删链接」这种动作在链接删除之后变成一条指向空处的记录。
+CREATE TABLE IF NOT EXISTS audit_log (
+  id         BIGINT       NOT NULL AUTO_INCREMENT,
+  user_id    VARCHAR(32)  NULL,     -- 登录失败且查无此人时为 NULL
+  username   VARCHAR(190) NULL,     -- 冗余快照，见上面的理由
+  action     VARCHAR(32)  NOT NULL, -- 取值见 AuditService 的七个常量
+  target     VARCHAR(190) NULL,     -- 被操作的对象（链接 id / 被禁用的账号 id）
+  detail     TEXT         NULL,     -- 补充说明（例如失败原因）
+  result     VARCHAR(16)  NULL,     -- success | failure | denied
+  ip         VARCHAR(64)  NULL,     -- 来源 IP，取法见 ClientIp
+  created_at VARCHAR(19)  NOT NULL,
+  PRIMARY KEY (id),
+  KEY idx_audit_user (user_id, created_at),
+  KEY idx_audit_action (action, created_at),
+  KEY idx_audit_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 /* ────────────── 用户修正记录 ────────────── */

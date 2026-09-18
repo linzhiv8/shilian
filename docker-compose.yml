@@ -33,9 +33,16 @@ services:
       # 不需要改代码。
       SERVER_ADDRESS: "0.0.0.0"
 
-      # 让后端认 nginx 传来的 X-Forwarded-*。
-      # 不配的话，后端以为外面是 http，cookie 的 Secure 判断和重定向都会错。
-      SERVER_FORWARD_HEADERS_STRATEGY: framework
+      # 让后端认 nginx 传来的 X-Forwarded-*，并据此取到真实客户端 IP。
+      #
+      # ⚠ 必须是 native，不能是 framework。nginx 用的是
+      #   `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`（追加语义），
+      #   头里是「<客户端伪造值>, <真实 IP>」。
+      #     - framework 取最左值 = 拿到伪造值 → 加一个 X-Forwarded-For 就能
+      #       绕过登录/注册限流；
+      #     - native 从右往左跳过可信代理 = 拿到 nginx 追加的真实地址。
+      #   配错成 framework 时，「伪造转发头绕过限流」这条路是通的。详见 application.yml。
+      SERVER_FORWARD_HEADERS_STRATEGY: native
       # 显式声明 SameSite。SecurityConfig 的 CSRF 缓解依赖它
       # （注释里写了「走 SameSite=Lax」），但代码里没有显式设置，
       # 一直是靠容器默认值——生产环境把它写明，别靠默认。

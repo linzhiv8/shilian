@@ -43,6 +43,22 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * 非管理员访问了管理接口。
+     *
+     * <p><b>是 404 不是 403</b>，理由和「删除别人的链接也返回 404」一致：
+     * 403 等于确认「这个东西存在」。见 {@link AdminAccessDeniedException}。
+     */
+    @ExceptionHandler(AdminAccessDeniedException.class)
+    public ResponseEntity<Map<String, Object>> adminAccessDenied(AdminAccessDeniedException e) {
+        return body(HttpStatus.NOT_FOUND, e.getMessage(), null);
+    }
+
+    @ExceptionHandler(AdminController.NotFoundException.class)
+    public ResponseEntity<Map<String, Object>> adminNotFound(AdminController.NotFoundException e) {
+        return body(HttpStatus.NOT_FOUND, e.getMessage(), null);
+    }
+
+    /**
      * 用户名或邮箱已被占用。
      *
      * <p>这里如实说明是哪一个被占了——注册时不说清楚，

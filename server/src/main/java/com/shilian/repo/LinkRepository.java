@@ -15,6 +15,7 @@ import com.shilian.repo.mapper.CorrectionMapper;
 import com.shilian.repo.mapper.LinkMapper;
 import com.shilian.repo.mapper.WeeklyDigestMapper;
 import com.shilian.util.RelativeTime;
+import com.shilian.util.TagNames;
 import com.shilian.util.Urls;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,10 +24,13 @@ import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -508,6 +512,211 @@ public class LinkRepository {
         return RelativeTime.format(new ReviewPolicy(days).cutoff(clock.now()));
     }
 
+    /* ────────────── 标签 ────────────── */
+
+    /** 一个标签以及有多少条链接在用。 */
+    public record TagCount(String name, int count) {}
+
+    /**
+     * 当前用户的全部标签及条数。
+     *
+     * <p><b>统计放在 Java 侧而不是 SQL。</b>
+     * {@code tags} 是 JSON 数组文本，用 SQL 展开要绕一圈 {@code JSON_TABLE}，
+     * 而个人库的量级（几百条，标签几十个）全量取回来在内存里数是微秒级。
+     * 同一个取舍在 {@link #search} 的用途过滤上做过一次，理由一致。
+     *
+     * <p><b>同一条链接上的重复标签只算一次。</b>
+     * 脏数据里可能有 {@code ["a","a"]}，不去重的话条数会虚高，
+     * 用户看到一个标签写着 2 条、点进去只有 1 条。
+     *
+     * <p>排序按条数降序、同条数按名字升序：条数多的在前（那是他真正在用的），
+     * 而同条数时按名字排是为了输出稳定——前端 chips 的顺序不会每次刷新都变。
+     */
+    public List<TagCount> tagCounts() {
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        for (LinkMapper.TagRow row : links.tagRows(uid())) {
+            for (String tag : distinct(JsonListTypeHandler.fromJson(row.tags()))) {
+                if (!tag.isBlank()) {
+                    counts.merge(tag, 1, Integer::sum);
+                }
+            }
+        }
+        return counts.entrySet().stream()
+                .map(e -> new TagCount(e.getKey(), e.getValue()))
+                .sorted(Comparator.comparingInt(TagCount::count).reversed()
+                        .thenComparing(TagCount::name))
+                .toList();
+    }
+
+    /**
+     * 标签改名。
+     *
+     * @return 改了多少条链接
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public int renameTag(String from, String to) {
+        String src = TagNames.normalize(from);
+        String dst = TagNames.normalize(to);
+        if (src == null || dst == null || src.equals(dst)) {
+            return 0;
+        }
+        int affected = 0;
+        for (LinkMapper.TagRow row : links.tagRows(uid())) {
+            List<String> tags = distinct(JsonListTypeHandler.fromJson(row.tags()));
+            if (!tags.contains(src)) {
+                continue;
+            }
+            List<String> updated = new ArrayList<>(tags.size());
+            for (String t : tags) {
+                updated.add(src.equals(t) ? dst : t);
+            }
+            /*
+             * 目标标签已经在这条上的时候（["a","b"] 把 a 改成 b），
+             * 直接替换会产生 ["b","b"]。去重一次，合并后不出现重复。
+             */
+            affected += writeTags(row.id(), distinct(updated));
+        }
+        return affected;
+    }
+
+    /**
+     * 把几个标签并到一个上。
+     *
+     * <p>和「改名」分开成两个接口，是因为它们的语义不同：
+     * 改名是一对一地换名字，合并是多对一地<b>减少</b>标签个数。
+     * 合并一定要保证目标标签存在——只删来源不加目标的话，
+     * 「合并」会变成「全部删掉」，那是一条记录上的标签凭空消失。
+     *
+     * @return 改了多少条链接
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public int mergeTags(List<String> sources, String target) {
+        String dst = TagNames.normalize(target);
+        if (dst == null || sources == null) {
+            return 0;
+        }
+        Set<String> src = new LinkedHashSet<>();
+        for (String s : sources) {
+            String n = TagNames.normalize(s);
+            // 目标本身也在 sources 里时跳过：它是要保留的那个，不是要删掉的
+            if (n != null && !n.equals(dst)) {
+                src.add(n);
+            }
+        }
+        if (src.isEmpty()) {
+            return 0;
+        }
+        int affected = 0;
+        for (LinkMapper.TagRow row : links.tagRows(uid())) {
+            List<String> tags = distinct(JsonListTypeHandler.fromJson(row.tags()));
+            if (tags.stream().noneMatch(src::contains)) {
+                continue;
+            }
+            List<String> updated = new ArrayList<>();
+            for (String t : tags) {
+                if (!src.contains(t)) {
+                    updated.add(t);
+                }
+            }
+            if (!updated.contains(dst)) {
+                updated.add(dst);
+            }
+            affected += writeTags(row.id(), updated);
+        }
+        return affected;
+    }
+
+    /**
+     * 删掉一个标签。<b>只摘标签，不动链接本身</b>——
+     * 「删标签」和「删链接」是两件事，混在一起会让用户不敢点。
+     *
+     * @return 改了多少条链接
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public int deleteTag(String name) {
+        String target = TagNames.normalize(name);
+        if (target == null) {
+            return 0;
+        }
+        int affected = 0;
+        for (LinkMapper.TagRow row : links.tagRows(uid())) {
+            List<String> tags = distinct(JsonListTypeHandler.fromJson(row.tags()));
+            if (!tags.contains(target)) {
+                continue;
+            }
+            List<String> updated = new ArrayList<>();
+            for (String t : tags) {
+                if (!target.equals(t)) {
+                    updated.add(t);
+                }
+            }
+            affected += writeTags(row.id(), updated);
+        }
+        return affected;
+    }
+
+    /** 写回一行标签，并顺手刷 updated_at。 */
+    private int writeTags(String linkId, List<String> tags) {
+        return links.updateTags(linkId, uid(), JsonListTypeHandler.toJson(tags),
+                RelativeTime.format(clock.now()));
+    }
+
+    /** 去空格、去空项、保留顺序去重。 */
+    private static List<String> distinct(List<String> tags) {
+        if (tags == null) {
+            return List.of();
+        }
+        Set<String> seen = new LinkedHashSet<>();
+        for (String t : tags) {
+            String name = TagNames.normalize(t);
+            if (name != null) {
+                seen.add(name);
+            }
+        }
+        return new ArrayList<>(seen);
+    }
+
+    /* ────────────── 导出 ────────────── */
+
+    /**
+     * 导出用的全量列表（R-07）。
+     *
+     * <p>和 {@link #search} 的区别只是<b>不拉正文快照</b>：
+     * 导出的形状用不到它，而它是全表最大的一列。
+     */
+    public List<LinkItem> forExport() {
+        return links.selectForExport(uid()).stream().map(this::toItem).toList();
+    }
+
+    /* ────────────── 管理端 ────────────── */
+
+    /** 每个用户各有多少条链接。给管理端的用户列表用。 */
+    public Map<String, Integer> linkCountsByUser() {
+        Map<String, Integer> out = new LinkedHashMap<>();
+        for (LinkMapper.UserLinkCount c : links.countByUser()) {
+            out.put(c.userId(), c.count());
+        }
+        return out;
+    }
+
+    /** 某个用户的 AI 用量合计。 */
+    public record AiUsage(long calls, long promptTokens, long completionTokens) {
+        public static final AiUsage EMPTY = new AiUsage(0L, 0L, 0L);
+    }
+
+    /**
+     * 每个用户各花了多少（R-15 的入账在这里变成管理端能看的数字）。
+     *
+     * <p>一次 GROUP BY 全量取回，而不是给页面上的 20 个用户各查一次。
+     */
+    public Map<String, AiUsage> aiUsageByUser() {
+        Map<String, AiUsage> out = new LinkedHashMap<>();
+        for (AiLogMapper.AiUsageRow r : aiLogs.usageByUser()) {
+            out.put(r.userId(), new AiUsage(r.calls(), r.promptTokens(), r.completionTokens()));
+        }
+        return out;
+    }
+
     /* ────────────── 周报 ────────────── */
 
     /** 领域分布的一项。 */
@@ -621,7 +830,7 @@ public class LinkRepository {
      * 这个方法做两件事：改 link、写 correction。没有事务时它们是各自独立提交的，
      * 于是「改成功了、写留痕失败了」会留下一个很难受的状态：
      * 接口返回 500（客户端以为没改成），但数据其实已经变了。
-     * 端到端冒烟测试真撞上过这一幕（当时是 correction 的列名写错）。
+     * 历史上有一次真撞上过这一幕（当时是 correction 的列名写错）。
      *
      * <p>correction 是提示词的反馈来源，静默丢一条就是静默降低一点效果。
      * 与其让它们不一致，不如整件事一起成功或一起失败。

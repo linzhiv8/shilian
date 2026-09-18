@@ -1,5 +1,6 @@
 package com.shilian.web;
 
+import com.shilian.analyze.AiUsageRecorder;
 import com.shilian.analyze.AnalyzeService;
 import com.shilian.domain.AnalyzeOutcome;
 import com.shilian.infrastructure.resilience.AnalysisGate;
@@ -25,11 +26,14 @@ public class AnalyzeController {
     private final AnalyzeService analyzeService;
     private final DraftStore draftStore;
     private final AnalysisGate gate;
+    private final AiUsageRecorder usage;
 
-    public AnalyzeController(AnalyzeService analyzeService, DraftStore draftStore, AnalysisGate gate) {
+    public AnalyzeController(AnalyzeService analyzeService, DraftStore draftStore,
+                             AnalysisGate gate, AiUsageRecorder usage) {
         this.analyzeService = analyzeService;
         this.draftStore = draftStore;
         this.gate = gate;
+        this.usage = usage;
     }
 
     /**
@@ -44,8 +48,26 @@ public class AnalyzeController {
         gate.acquire();
         try {
             AnalyzeOutcome outcome = analyzeService.analyze(request.url(), request.text());
+            /*
+             * R-15：这里也要记账，哪怕这次分析最后没被保存。
+             *
+             * 「分析完看一眼，觉得不对，关掉重来」是最常见的用法，也是最容易失控的
+             * 烧钱路径——它不落库，所以过去在账上完全看不见。只记 save() 的话，
+             * 账单显示的是「成功存下来的那些花了多少钱」，而真实花销可能是它的几倍。
+             *
+             * link_id 传 null：这一刻还没有记录，硬造一个 id 反而会让账目指向不存在的东西。
+             */
+            usage.record(null, outcome.draft());
             String draftId = draftStore.put(outcome);
             return new AnalyzeResponse(draftId, outcome.draft());
+        } catch (AnalyzeService.AnalysisFailedException e) {
+            /*
+             * 失败也要记，而且这是最该留痕的一类。
+             * 失败往往成串出现（同一个网址反复重试、AI 抽风），
+             * 不记的话账单上看到的永远是「风平浪静」。
+             */
+            usage.record(null, e);
+            throw e;
         } finally {
             gate.release();
         }

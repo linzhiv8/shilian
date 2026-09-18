@@ -119,6 +119,34 @@ public class UserRepository {
         return users.findAll().stream().map(UserRepository::toUser).toList();
     }
 
+    /* ────────────── 管理端 ────────────── */
+
+    /**
+     * 管理端的用户分页。
+     *
+     * <p>这个查询<b>不带用户过滤</b>，和 {@code LinkRepository} 里那些
+     * 「必须带 user_id」的查询不是一类：{@code app_user} 本身就是用户表，
+     * 「看所有用户」正是管理端要的。权限由调用方（{@code AdminController}）
+     * 先把住——不是靠这条 SQL 自己。
+     */
+    public List<User> searchPage(String keyword, int offset, int limit) {
+        return users.searchPage(keyword, offset, limit).stream().map(UserRepository::toUser).toList();
+    }
+
+    /** {@link #searchPage} 同一个条件下的总数。 */
+    public int countByKeyword(String keyword) {
+        return users.countByKeyword(keyword);
+    }
+
+    /**
+     * 禁用 / 恢复账号。
+     *
+     * @return 实际改动的行数。0 表示没有这个 id——由调用方翻译成 404。
+     */
+    public int updateStatus(String userId, String status) {
+        return users.updateStatus(userId, status);
+    }
+
     /** 供 ApplicationRunner 用：判断要不要初始化首个账号。 */
     public boolean isEmpty() {
         return countAll() == 0;
@@ -142,7 +170,8 @@ public class UserRepository {
                 e.getFailedAttempts() == null ? 0 : e.getFailedAttempts(),
                 e.getLockedUntil(),
                 e.getCreatedAt(),
-                e.getLastLoginAt());
+                e.getLastLoginAt(),
+                e.getRole());
     }
 
     /** 12 位十六进制，和 link 的 id 同一套格式。 */

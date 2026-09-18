@@ -13,6 +13,14 @@ interface Props {
   onFix: (item: LinkItem) => void;
   /** 打开「编辑」抽屉，改这条的标题/摘要/备注/分类。不调模型。 */
   onEdit: (item: LinkItem) => void;
+  /**
+   * 从「去看看那条」跳过来时短暂置真，给这条一圈强调描边。
+   *
+   * <p>为什么需要它：`scrollIntoView` 只把条目滚到视野中央，而列表是一整片
+   * 同样的排版，滚过去之后眼睛未必立刻认得出是哪一条——尤其是上下都有相邻条目时。
+   * 描边把「就是这条」这件事讲清楚，2 秒后自动撤掉，不留常驻选中态。
+   */
+  highlight?: boolean;
 }
 
 /**
@@ -28,16 +36,28 @@ interface Props {
  *    它是用户亲手写的，必须和上面那段 AI 生成的摘要一眼分得开。
  */
 export default function LinkEntry({
-  item, onToggleStar, onOpen, onDelete, onFix, onEdit,
+  item, onToggleStar, onOpen, onDelete, onFix, onEdit, highlight,
 }: Props) {
   const d = domainOf(item.domainKey);
   const [confirming, setConfirming] = useState(false);
 
   return (
     <article
+      /*
+       * id 是给「去看看那条」用的锚点：App 那边拿到已有记录的 id 之后，
+       * 靠 document.getElementById(`link-${id}`) 找到这一条并 scrollIntoView。
+       * 列表是全量渲染的，所以这个 id 一定存在——找不到只可能是逻辑写错了。
+       */
+      id={`link-${item.id}`}
       className={cn(
         "group grid grid-cols-[3px_1fr_auto] gap-x-4 border-b border-linesoft py-[18px] pr-4 transition-colors last:border-b-0",
         "hover:bg-sunken/55",
+        /*
+         * 高亮态：accent 描边 + 极淡 accent 底，而不是红色或闪烁——
+         * 红色在这套配色里是「出错了」的信号，闪烁会被读成加载失败。
+         * ring 是 box-shadow、不占布局，所以不会把相邻条目挤动。
+         */
+        highlight && "rounded-[6px] bg-accentsoft ring-2 ring-accent/60",
       )}
     >
       {/* 领域竖线。整条里唯一的色块，3px 宽 */}

@@ -20,10 +20,19 @@ public record User(
         int failedAttempts,
         String lockedUntil,
         String createdAt,
-        String lastLoginAt
+        String lastLoginAt,
+        /**
+         * 角色。库里是 {@code NOT NULL DEFAULT 'user'}，
+         * 但读出来的行理论上仍可能是 NULL（老库升上来时的脏数据），
+         * 判断一律走 {@link #isAdmin()}，别直接比字符串。
+         */
+        String role
 ) {
     public static final String STATUS_ACTIVE = "active";
     public static final String STATUS_DISABLED = "disabled";
+
+    public static final String ROLE_USER = "user";
+    public static final String ROLE_ADMIN = "admin";
 
     /**
      * 此刻是否处于锁定状态。
@@ -41,6 +50,23 @@ public record User(
 
     public boolean isDisabled() {
         return STATUS_DISABLED.equals(status);
+    }
+
+    /**
+     * 是否管理员。
+     *
+     * <p><b>这只是一个展示用的标记，不是权限判据。</b>
+     * 真正的校验在 {@code /api/admin/**} 那一层：非管理员访问管理接口返回 404。
+     * 前端拿它决定「要不要显示管理端入口」——不给它，前端要么多请求一次，
+     * 要么把入口无条件显示出来（后者等于把「存在管理员」这件事告诉所有人）。
+     */
+    public boolean isAdmin() {
+        return ROLE_ADMIN.equals(role);
+    }
+
+    /** 对外展示的角色。空值兜成 {@link #ROLE_USER}，免得接口里出现 {@code "role": null}。 */
+    public String roleOrDefault() {
+        return role == null || role.isBlank() ? ROLE_USER : role;
     }
 
     /** 展示名：有昵称用昵称，没有就用用户名。 */

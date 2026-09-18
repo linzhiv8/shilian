@@ -1,12 +1,14 @@
 package com.shilian.web;
 
+import com.shilian.analyze.AiUsageRecorder;
 import com.shilian.analyze.AnalyzeService;
-import com.shilian.config.ShilianProperties;
 import com.shilian.domain.AnalyzeDraft;
 import com.shilian.domain.AnalyzeOutcome;
 import com.shilian.domain.Domain;
 import com.shilian.domain.LinkItem;
 import com.shilian.domain.Purpose;
+import com.shilian.domain.port.CurrentUser;
+import com.shilian.infrastructure.audit.AuditService;
 import com.shilian.repo.LinkRepository;
 import com.shilian.util.RelativeTime;
 import com.shilian.util.Urls;
@@ -15,6 +17,7 @@ import com.shilian.web.dto.PatchLinkRequest;
 import com.shilian.web.dto.QuickSaveRequest;
 import com.shilian.web.dto.ReanalyzeRequest;
 import com.shilian.web.dto.SaveLinkRequest;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -42,14 +45,19 @@ public class LinkController {
     private final LinkRepository repo;
     private final DraftStore drafts;
     private final AnalyzeService analyzeService;
-    private final ShilianProperties props;
+    private final AiUsageRecorder usage;
+    private final AuditService audit;
+    private final CurrentUser current;
 
     public LinkController(LinkRepository repo, DraftStore drafts,
-                          AnalyzeService analyzeService, ShilianProperties props) {
+                          AnalyzeService analyzeService, AiUsageRecorder usage,
+                          AuditService audit, CurrentUser current) {
         this.repo = repo;
         this.drafts = drafts;
         this.analyzeService = analyzeService;
-        this.props = props;
+        this.usage = usage;
+        this.audit = audit;
+        this.current = current;
     }
 
     /* ────────────── 保存 ────────────── */
@@ -88,7 +96,11 @@ public class LinkController {
             saved = repo.patch(saved.id(), Map.of("status", "used")).orElse(saved);
         }
 
-        logAiCall(saved.id(), d);
+        /*
+         * 这里不再记 ai_log：钱是在 /api/analyze 那一次调用时花掉的，
+         * 账已经在那里记过（见 AiUsageRecorder 的类注释）。
+         * 两处都记会让每个人的用量翻倍。
+         */
         drafts.remove(req.draftId());
         return saved;
     }
@@ -145,8 +157,16 @@ public class LinkController {
         LinkItem link = repo.findById(id)
                 .orElseThrow(() -> new NotFoundException("找不到这条记录"));
         // 网址从记录里取，不用前端传——避免「重分析」变成「偷偷把这条记录指向别的网址」
-        AnalyzeOutcome outcome = analyzeService.analyze(link.url(), req == null ? null : req.text());
-        return new AnalyzeResponse(drafts.put(outcome), outcome.draft());
+        try {
+            AnalyzeOutcome outcome = analyzeService.analyze(link.url(), req == null ? null : req.text());
+            // R-15：重分析同样花了钱，而且它是「反复重跑」这条浪费路径的主角。
+            // 这次有 linkId，所以账上能追到具体是哪条记录。
+            usage.record(id, outcome.draft());
+            return new AnalyzeResponse(drafts.put(outcome), outcome.draft());
+        } catch (AnalyzeService.AnalysisFailedException e) {
+            usage.record(id, e);
+            throw e;
+        }
     }
 
     /**
@@ -184,7 +204,7 @@ public class LinkController {
             updated = repo.patch(id, Map.of("status", "used")).orElse(updated);
         }
 
-        logAiCall(id, d);
+        // 同上：这次调用的账已经在 /{id}/reanalyze 那里记过了
         drafts.remove(req.draftId());
         return updated;
     }
@@ -256,12 +276,27 @@ public class LinkController {
                 .orElseThrow(() -> new NotFoundException("找不到这条记录"));
     }
 
+    /**
+     * 删除。
+     *
+     * <p>删之前先把标题记进审计：记录删掉之后，只剩一个 id 是没法回答
+     * 「他删的是什么」的。所以这里存的是<b>当时的文字</b>，不是引用。
+     */
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void delete(@PathVariable String id) {
+    public void delete(@PathVariable String id, HttpServletRequest request) {
+        LinkItem link = repo.findById(id)
+                .orElseThrow(() -> new NotFoundException("找不到这条记录"));
         if (!repo.delete(id)) {
             throw new NotFoundException("找不到这条记录");
         }
+        /*
+         * target 存链接 id 而不是标题：标题会被改、会很长、还可能重复，
+         * 只有 id 能回头对上具体是哪一条。标题进 detail，给读日志的人看。
+         */
+        audit.record(current.id(), null, AuditService.LINK_DELETE, id,
+                AuditService.RESULT_SUCCESS,
+                link.title() + " · " + link.url(), ClientIp.of(request));
     }
 
     /* ────────────── 小工具 ────────────── */
@@ -304,18 +339,6 @@ public class LinkController {
         return drafts.get(draftId)
                 .orElseThrow(() -> new DraftExpiredException("这次分析的草稿已过期，请重新分析一次"))
                 .outcome();
-    }
-
-    /**
-     * 记一条 AI 调用日志。
-     *
-     * <p>errors 记 repairLog 而不是 validationErrors：后者在「第一次错、重试后对了」
-     * 这种最常见的情况下是空的，而那恰恰是最值得留痕的情况。
-     */
-    private void logAiCall(String linkId, AnalyzeDraft d) {
-        repo.insertAiLog(linkId, props.deepseek().model(), d.attempts(),
-                d.promptTokens(), d.completionTokens(), d.validationErrors().isEmpty(),
-                d.repairLog().isEmpty() ? null : String.join(" | ", d.repairLog()));
     }
 
     /** 过滤掉非法枚举值。用户可能提交脏数据，不能让它进库。 */

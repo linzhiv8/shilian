@@ -5,11 +5,13 @@ import LinkEntry from "./components/LinkEntry";
 import SavePanel from "./components/SavePanel";
 import ReviewView from "./components/ReviewView";
 import WeeklyView from "./components/WeeklyView";
+import AdminView from "./components/AdminView";
+import TagManager from "./components/TagManager";
 import AuthView from "./components/AuthView";
 import {
   ApiError, getMeta, listLinks, patchLink, deleteLink, getReviewCount,
-  semanticSearch, getMe, logout,
-  type AuthUser, type Meta,
+  semanticSearch, getMe, logout, listTags, isAdmin,
+  type AuthUser, type Meta, type TagItem,
 } from "./api";
 import { DOMAINS, PURPOSES, type DomainKey, type LinkItem, type PurposeKey } from "./types";
 
@@ -40,7 +42,7 @@ function checkMetaConsistency(meta: Meta) {
   }
 }
 
-type View = "list" | "review" | "weekly";
+type View = "list" | "review" | "weekly" | "admin";
 
 export default function App() {
   const [links, setLinks] = useState<LinkItem[]>([]);
@@ -87,9 +89,36 @@ export default function App() {
   const [semanticError, setSemanticError] = useState<string | null>(null);
   /** 本次补算了几条向量，>0 时告诉用户「这次慢是因为在建索引」 */
   const [semanticComputed, setSemanticComputed] = useState(0);
+  /**
+   * 自增计数，只用来「手动重跑一次语义搜索」。
+   *
+   * <p>把它加进搜索 effect 的依赖数组，就是「再试一次」按钮的全部实现。
+   * 不选「把 query 清空再设回去」那种写法：那会触发两次渲染、闪一下空列表，
+   * 而且如果用户搜的词本来就是同一个，React 可能把两次 setState 合并掉，
+   * 结果是「点了按钮没反应」——最要命的正是这个按钮失灵。
+   */
+  const [semanticRetry, setSemanticRetry] = useState(0);
   const [sort, setSort] = useState<SortKey>("recent");
   const [activeDomain, setActiveDomain] = useState<DomainKey | "all">("all");
   const [activePurposes, setActivePurposes] = useState<PurposeKey[]>([]);
+  /**
+   * 标签筛选。只存名字，和用途一样是「勾几个就是都要有」。
+   *
+   * <p>为什么是「都要有」而不是「有一个就行」：用途那边已经是这个语义
+   * （`activePurposes.every`），两套筛选的规矩不一致会让用户每次都要重新试一遍——
+   * 而勾得越多结果越少这件事，是符合直觉的那一种。
+   */
+  const [activeTags, setActiveTags] = useState<string[]>([]);
+  /**
+   * 全部标签及其条数。**从服务端取**，不从本地 links 自己数。
+   *
+   * <p>标签的增删改是服务端的跨行操作（一条 SQL 动几十行的 tags 数组），
+   * 既然管理走服务端，这份清单也从同一个地方来，省得「chips 上说 5 条、
+   * 删完说动了 7 条」这种对不上。
+   */
+  const [tags, setTags] = useState<TagItem[]>([]);
+  /** 标签管理面板（改名 / 合并 / 删除） */
+  const [tagManagerOpen, setTagManagerOpen] = useState(false);
   // 主题选择要留下来。之前只存在内存里，刷新一次就回到浅色——
   // 对一个天天开着用的工具来说，每次都要重新点一下是很烦的。
   // 没存过时跟随系统偏好，而不是硬编码浅色。
@@ -112,6 +141,14 @@ export default function App() {
    * 这件事由类型和初始化保证，而不是靠调用方记得清另一个。
    */
   const [editTarget, setEditTarget] = useState<LinkItem | null>(null);
+  /**
+   * 需要滚动定位并高亮的那条记录的 id。用完（滚到位 + 高亮 2 秒）自动清空。
+   *
+   * <p>两件事共用它：R-01「重复链接去看看那条」和 R-02「quick 存完定位到新记录」。
+   * 两处的诉求一模一样——把一条具体的记录推到用户眼前，所以走同一套机制，
+   * 而不是各写一份滚动逻辑。
+   */
+  const [focusId, setFocusId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [toastKind, setToastKind] = useState<"ok" | "warn">("ok");
 
@@ -153,9 +190,18 @@ export default function App() {
     setLoading(true);
     setBootError(null);
     try {
-      const [items, m] = await Promise.all([listLinks(), getMeta()]);
+      /*
+       * 标签也一起拉，但**单独兜住失败**：它只是筛选条上的一排 chips，
+       * 拿不到的话列表照样能看、能搜。不该让一个次要请求把整个启动拖成错误页。
+       */
+      const [items, m, t] = await Promise.all([
+        listLinks(),
+        getMeta(),
+        listTags().catch(() => [] as TagItem[]),
+      ]);
       setLinks(items);
       setMeta(m);
+      setTags(t);
       checkMetaConsistency(m);
       void refreshReviewCount();
     } catch (e) {
@@ -207,6 +253,9 @@ export default function App() {
     setUser(null);
     setLinks([]);
     setMeta(null);
+    setTags([]);
+    setActiveTags([]);
+    setTagManagerOpen(false);
     setReviewCount(0);
     setQuery("");
     setSemanticOrder(null);
@@ -300,13 +349,71 @@ export default function App() {
       alive = false;
       clearTimeout(timer);
     };
-  }, [semantic, query]);
+    /*
+     * semanticRetry 是「再试一次」按钮的触发源：它一变就重跑整个 effect，
+     * 包括那段防抖和 alive 标志位——所以重试和第一次搜索走的是同一条路径，
+     * 不会出现「重试时旧响应把新结果覆盖掉」这种只有重试才有的 bug。
+     */
+  }, [semantic, query, semanticRetry]);
+
+  /**
+   * 把 focusId 指向的那条记录滚到视野里，并短暂高亮。
+   *
+   * <p>为什么不是「设了 focusId 立刻滚」：清筛选（setActiveDomain 等）和设 focusId
+   * 是同一次事件里发生的，React 会把它们合并成一次重渲染。要等这一次渲染把
+   * <b>清完筛选后的列表</b>提交到 DOM，getElementById 才找得到那条记录——
+   * 直接同步查大概率落空。60ms 是给这一帧留的余量。
+   *
+   * <p>找不到不能静默：列表是全量渲染的，理论上不该找不到；真找不到说明状态被谁
+   * 清错了，得让用户看见（否则点了「去看看那条」毫无反应，像是按钮坏了）。
+   *
+   * <p>滚动容器是下面那个 `<main className="flex-1 overflow-y-auto">`，
+   * scrollIntoView 在它内部生效，不需要额外传容器。
+   */
+  useEffect(() => {
+    if (!focusId) return;
+    const scrollTimer = setTimeout(() => {
+      const el = document.getElementById(`link-${focusId}`);
+      if (!el) {
+        notify("没找到那条记录", "warn");
+        setFocusId(null);
+        return;
+      }
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+    }, 60);
+    // 高亮 2 秒后撤掉：太短看不清是哪一条，太长会让人以为它一直是选中态。
+    const clearTimer = setTimeout(() => setFocusId(null), 60 + 2000);
+    return () => {
+      clearTimeout(scrollTimer);
+      clearTimeout(clearTimer);
+    };
+  }, [focusId, notify]);
+
+  /**
+   * 管理端的路由守卫。
+   *
+   * <p>入口只对管理员渲染，正常路径走不到这里。但视图是个状态：
+   * 会话可能在半路变了（管理员身份被撤、换了账号），而视图还停在 admin 上。
+   * 不拦的话就是一个空白页——用户只会觉得应用坏了，不会猜到是权限的事。
+   *
+   * <p>后端那一层还有一道（非管理员 404），页面本身也兜了「没有权限」那一屏
+   * （见 AdminView）。三道不是重复：它们分别挡住「入口看得见」
+   * 「请求发得出去」「界面白屏」这三种不同的漏法。
+   */
+  useEffect(() => {
+    if (view !== "admin") return;
+    if (isAdmin(user)) return;
+    notify("没有权限", "warn");
+    setView("list");
+  }, [view, user, notify]);
 
   const filtered = useMemo(() => {
     let out = links;
     if (activeDomain !== "all") out = out.filter((l) => l.domainKey === activeDomain);
     if (activePurposes.length)
       out = out.filter((l) => activePurposes.every((p) => l.purposes.includes(p)));
+    if (activeTags.length)
+      out = out.filter((l) => activeTags.every((t) => l.tags.includes(t)));
 
     /*
      * 语义模式：命中的集合由服务端给（已按相似度排好），本地的领域/用途筛选照旧生效。
@@ -335,7 +442,7 @@ export default function App() {
     if (sort === "starred") s.sort((a, b) => Number(b.starred) - Number(a.starred));
     if (sort === "stale") s.sort((a, b) => (b.idleDays ?? 0) - (a.idleDays ?? 0));
     return s;
-  }, [links, activeDomain, activePurposes, query, sort, semantic, semanticOrder]);
+  }, [links, activeDomain, activePurposes, activeTags, query, sort, semantic, semanticOrder]);
 
   /* ── 改动：先乐观更新，失败再回滚 ── */
 
@@ -412,6 +519,30 @@ export default function App() {
     setView("list");
   };
 
+  /** 点标签 chip。和点用途一样：点筛选就是在说「我要看列表」。 */
+  const toggleTag = (name: string) => {
+    setActiveTags((prev) =>
+      prev.includes(name) ? prev.filter((x) => x !== name) : [...prev, name],
+    );
+    setView("list");
+  };
+
+  /**
+   * 标签改完（改名 / 合并 / 删除）之后的收尾。
+   *
+   * <p><b>整体重拉一次</b>，不在本地模仿服务端的改动。那套改动是跨行的
+   * （几十条记录的 tags 数组），前端抄一遍就是第二份实现，必然漂。
+   *
+   * <p><b>顺手清掉标签筛选</b>：用户刚才筛的那个名字可能已经被改名或删掉了，
+   * 留着它只会得到一个「筛选着、但一条都没有」的空列表，而且看不出为什么空。
+   */
+  const handleTagsChanged = (message: string) => {
+    setTagManagerOpen(false);
+    setActiveTags([]);
+    notify(message);
+    void boot();
+  };
+
   /**
    * 点领域 = 想看列表。在回顾/周报里点它也要切回来，
    * 否则点了没反应，会像坏了一样。
@@ -483,6 +614,57 @@ export default function App() {
     void refreshReviewCount();
   };
 
+  /**
+   * 保存撞到 409 时点「去看看那条」。
+   *
+   * <p>要做的第一件事是<b>关抽屉并清掉两个 target</b>——否则用户点了按钮、抽屉一关，
+   * 下次再打开面板会莫名其妙回到上次的补正文/编辑状态。
+   *
+   * <p>然后清掉所有可能挡住这条记录的筛选。定位目标是一条具体记录，而领域/用途/
+   * 关键词/语义筛选都可能把它挡在列表之外——不清就会「点了按钮，列表却没滚过去，
+   * 因为那条根本不在这儿」。此刻用户的意图很明确（我要看这一条），筛选的意图得让位。
+   */
+  const handleGotoExisting = (id: string) => {
+    setPanelOpen(false);
+    setFixTarget(null);
+    setEditTarget(null);
+    setActiveDomain("all");
+    setActivePurposes([]);
+    setActiveTags([]);
+    setQuery("");
+    setSemantic(false);
+    setView("list");
+    setFocusId(id);
+  };
+
+  /**
+   * quick 存下来之后的回写（R-02）。
+   *
+   * <p>单独一个 handler，没往 handleSave 的 mode 里塞第四个值：quick 记录不经过
+   * 草稿审核、不替换任何东西，和 new/fix/edit 三种 mode 没有一处共享逻辑。
+   * 硬塞进去只会让 handleSave 多一个只走两行的分支，反而更难读。
+   *
+   * <p>提示语也不复用 handleSave 那句「已存入 · 分类和备注随时可以改」——
+   * quick 记录还没有分类和备注，那句话对它来说是假的。
+   */
+  const handleQuickSaved = (item: LinkItem) => {
+    setLinks((prev) => [item, ...prev]);
+    setPanelOpen(false);
+    setFixTarget(null);
+    setEditTarget(null);
+    // 和「去看看那条」同样先清筛选：新记录虽然插在最前，但筛选一挡就看不见，
+    // 而用户刚点了「先存网址」，下一步一定是想确认它存进去了。
+    setActiveDomain("all");
+    setActivePurposes([]);
+    setActiveTags([]);
+    setQuery("");
+    setSemantic(false);
+    setView("list");
+    setFocusId(item.id);
+    notify("先存住了 · 补上正文就能分析");
+    void refreshReviewCount();
+  };
+
   /* ── 还没确认登录态：先别画任何东西，否则登录页会闪一下 ── */
 
   if (authChecking) {
@@ -535,6 +717,8 @@ export default function App() {
         view={view}
         onReview={() => setView("review")}
         onWeekly={() => setView("weekly")}
+        isAdmin={isAdmin(user)}
+        onAdmin={() => setView("admin")}
         theme={theme}
         toggleTheme={() => setTheme(theme === "light" ? "dark" : "light")}
         aiReady={meta?.aiConfigured ?? false}
@@ -553,6 +737,10 @@ export default function App() {
         setActiveDomain={pickDomain}
         activePurposes={activePurposes}
         togglePurpose={togglePurpose}
+        tags={tags}
+        activeTags={activeTags}
+        toggleTag={toggleTag}
+        onManageTags={() => setTagManagerOpen(true)}
         onRefresh={() => void boot()}
         refreshing={loading}
         count={filtered.length}
@@ -572,6 +760,8 @@ export default function App() {
               onExit={exitToList}
               notify={notify}
             />
+          ) : view === "admin" ? (
+            <AdminView myId={user.id} onExit={exitToList} notify={notify} />
           ) : (
             <WeeklyView onOpen={handleOpen} onExit={exitToList} notify={notify} />
           )
@@ -585,10 +775,29 @@ export default function App() {
               {semanticError && (
                 <div className="mb-4 flex items-start gap-2 rounded-lg border border-line bg-sunken px-3 py-2.5">
                   <AlertCircle size={13} className="mt-[2px] shrink-0 text-ink3" />
-                  <p className="text-[12px] leading-relaxed text-ink2">
+                  <p className="flex-1 text-[12px] leading-relaxed text-ink2">
                     语义搜索没成功：{semanticError}
-                    <span className="text-ink3">（可以关掉语义，用关键词搜）</span>
                   </p>
+                  {/*
+                    两个出口。主出口是「再试一次」——用户撞到失败的第一反应就是
+                    再来一遍，而语义搜索的失败多半是上游抖动（向量服务超时），
+                    重试经常就好了。次要出口是关掉语义退回关键词搜，
+                    保留它是因为前者万一一直失败，用户总得有路可走。
+                  */}
+                  <div className="flex shrink-0 items-center gap-2 pt-[1px]">
+                    <button
+                      onClick={() => setSemanticRetry((n) => n + 1)}
+                      className="rounded-md border border-line px-2 py-[3px] text-[11.5px] text-ink2 transition-colors hover:border-line-strong hover:text-ink"
+                    >
+                      再试一次
+                    </button>
+                    <button
+                      onClick={() => setSemantic(false)}
+                      className="text-[11.5px] text-ink3 transition-colors hover:text-ink"
+                    >
+                      关掉语义，用关键词搜
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -648,6 +857,7 @@ export default function App() {
                         onDelete={handleDelete}
                         onFix={openFix}
                         onEdit={openEdit}
+                        highlight={l.id === focusId}
                       />
                     </div>
                   ))}
@@ -668,8 +878,22 @@ export default function App() {
           setEditTarget(null);
         }}
         onSave={handleSave}
+        onGotoExisting={handleGotoExisting}
+        onQuickSaved={handleQuickSaved}
         onNotify={notify}
       />
+
+      {/*
+        标签管理。做成独立面板而不是塞进筛选条：改名/合并/删除是**整理动作**，
+        和「我现在想看什么」不是同一件事，混在一排 chips 里会被顺手点到。
+      */}
+      {tagManagerOpen && (
+        <TagManager
+          tags={tags}
+          onClose={() => setTagManagerOpen(false)}
+          onChanged={handleTagsChanged}
+        />
+      )}
 
       {toast && (
         <div className="fadein fixed bottom-6 left-1/2 z-[60] flex -translate-x-1/2 items-center gap-2 rounded-lg border border-line bg-surface px-3.5 py-2 shadow-[0_10px_30px_-12px_rgba(0,0,0,0.25)]">

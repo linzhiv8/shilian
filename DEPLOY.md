@@ -194,14 +194,36 @@ SPRING_DATASOURCE_URL=jdbc:mysql://127.0.0.1:3306/shilian?useSSL=false&allowPubl
 SPRING_DATASOURCE_USERNAME=shilian
 SPRING_DATASOURCE_PASSWORD=第4步设的密码
 DEEPSEEK_API_KEY=sk-你的key
-LOGGING_LEVEL_COM_SHILIAN=INFO
-SERVER_FORWARD_HEADERS_STRATEGY=framework
-SERVER_SERVLET_SESSION_COOKIE_SAME_SITE=lax
-SERVER_SERVLET_SESSION_COOKIE_SECURE=false
+logging.level.com.shilian=INFO
+SERVER_FORWARD_HEADERS_STRATEGY=native
+server.servlet.session.cookie.same-site=lax
+server.servlet.session.cookie.secure=false
 EOF
 
 chmod 600 /opt/shilian/.env.properties    # 里面有数据库密码和 API Key
 ```
+
+这个文件里两种键名风格是**故意混用**的，不是笔误：
+
+- `SPRING_DATASOURCE_*` / `DEEPSEEK_API_KEY` 用大写+下划线，因为 `application.yml`
+  里有同名的 `${}` 占位符（`${SPRING_DATASOURCE_URL:...}` 这种）；
+- 其余用点号键（`server.servlet.session.cookie.same-site`），因为 yml 里没有占位符。
+
+**大写+下划线的键只在 yml 有同名占位符时才会被读到**——它不会自动映射成
+`server.xxx.yyy`。Spring Boot 的 relaxed binding 只对真实环境变量做「大写 → 点号」
+的转换；`.properties` 文件走的是逐字比较，`SERVER_SERVLET_SESSION_COOKIE_SECURE`
+永远匹配不上 `server.servlet.session.cookie.secure`。写错形式**不报错、也不生效**，
+排查起来非常费时间——所以这里宁可写成难看的点号键，也别写成看着规整的大写键。
+
+⚠ `SERVER_FORWARD_HEADERS_STRATEGY` 必须是 `native`，**不是 `framework`**。
+
+nginx 那边用的是 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`
+（追加语义），客户端自己送来的 `X-Forwarded-For` 会原样留在前面、nginx 只把真实
+地址追加在最后，于是这个头是「`<伪造值>, <真实 IP>`」。`framework`（Spring 的
+`ForwardedHeaderFilter`）取**最左**值 = 拿到伪造值，任何人加一个
+`X-Forwarded-For: 1.2.3.4` 就能把登录/注册限流整个绕过去；`native`（Tomcat 的
+`RemoteIpValve`）**从右往左跳过可信代理**，拿到的是 nginx 追加的真实地址，且只在
+直连方是私有/回环地址时才采信（nginx 从 `127.0.0.1` 连过来正好命中）。
 
 `DEEPSEEK_API_KEY` 直接从本地 `server/.env.properties` 里复制那一行。
 

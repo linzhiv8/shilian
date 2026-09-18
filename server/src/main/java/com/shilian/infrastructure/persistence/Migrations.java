@@ -60,8 +60,26 @@ public class Migrations {
      */
     public record Migration(int version, String name, String script, boolean rebuildsTables) {}
 
+    /**
+     * 迁移列表，按版本号升序。
+     *
+     * <p><b>为什么第二个迁移叫 V2，而需求文档里写的是 V4。</b>
+     * 需求文档（{@code 拾链-迭代需求-2026-09-18.md}）按批次排号：批次 3 一个迁移、
+     * 批次 4 一个迁移、批次 6 是 V4。<b>但批次 3、4 到现在都还没做</b>，
+     * 生产库 {@code schema_version} 里只有 V1——本条是库里的<b>第二条</b>迁移，
+     * 所以它是 V2。
+     *
+     * <p>版本号必须等于「库里实际的下一个版本」，不能按文档预留：
+     * {@link #migrate()} 用 {@code m.version() <= current} 跳过旧迁移，
+     * 写成 4 的话，等批次 3/4 真的做完、它们的脚本以 V3/V4 进来时，
+     * 会因为「版本号已经推进到 4」被<b>静默跳过</b>——表结构静默地缺一块，
+     * 而且没有任何报错。跳号本身无害，把号占掉才有害。
+     *
+     * <p>将来批次 3/4 落地时，它们依次补上 V3、V4，本条仍然留在 V2 不动。
+     */
     private static final List<Migration> MIGRATIONS = List.of(
-            new Migration(1, "baseline", "db/V1__baseline.sql", false)
+            new Migration(1, "baseline", "db/V1__baseline.sql", false),
+            new Migration(2, "admin", "db/V2__admin.sql", false)
     );
 
     private final JdbcTemplate jdbc;

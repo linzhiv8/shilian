@@ -5,6 +5,7 @@ import com.shilian.domain.AuthenticationRequiredException;
 import com.shilian.domain.port.Clock;
 import com.shilian.domain.port.CurrentUser;
 import com.shilian.domain.user.User;
+import com.shilian.infrastructure.audit.AuditService;
 import com.shilian.infrastructure.security.RateLimiter;
 import com.shilian.repo.LinkRepository;
 import com.shilian.repo.UserRepository;
@@ -53,6 +54,7 @@ public class AuthController {
     private final LinkRepository links;
     private final CurrentUser current;
     private final RateLimiter limiter;
+    private final AuditService audit;
 
     /**
      * 用户不存在时用来空转一次的哈希。
@@ -67,7 +69,7 @@ public class AuthController {
     public AuthController(UserRepository users, PasswordEncoder encoder,
                           AuthenticationManager authManager, ShilianProperties props,
                           Clock clock, LinkRepository links, CurrentUser current,
-                          RateLimiter limiter) {
+                          RateLimiter limiter, AuditService audit) {
         this.users = users;
         this.encoder = encoder;
         this.authManager = authManager;
@@ -76,6 +78,7 @@ public class AuthController {
         this.links = links;
         this.current = current;
         this.limiter = limiter;
+        this.audit = audit;
         this.dummyHash = encoder.encode("timing-attack-placeholder");
     }
 
@@ -185,8 +188,27 @@ public class AuthController {
         // 而这里泄露的「用户名存在」在锁定时已经无所谓了——
         // 能试到锁定，说明他已经知道这个账号存在。
         if (target != null && target.isLockedAt(clock.now())) {
+            audit.recordLogin(target.id(), target.username(), false, "账号已锁定", clientIp(request));
             throw new AccountLockedException(
                     "尝试次数太多了，请 " + props.auth().lockMinutes() + " 分钟后再试");
+        }
+
+        /*
+         * R-17：停用的账号在这里就进不来。
+         *
+         * <b>响应必须和「用户名或密码不对」一字不差。</b>
+         * 「账号已被停用」这句话同时泄露了两件事：这个账号存在、它被人处理过。
+         * 拿它去撞库的人先得到一份「真实账号清单」，比密码错有用得多。
+         * 真正的提示由管理员线下告知，不在接口里说。
+         *
+         * <b>仍然要空转一次 bcrypt</b>：这里一次密码比较都没做，
+         * 直接返回会比「密码错」快几十毫秒，光是这个时间差就足以判断
+         * 「这个账号存在，只是被停了」——前面的措辞就白统一了。
+         */
+        if (target != null && target.isDisabled()) {
+            burnTime(req.password());
+            audit.recordLogin(target.id(), target.username(), false, "账号已被停用", clientIp(request));
+            throw new InvalidCredentialsException();
         }
 
         try {
@@ -217,13 +239,23 @@ public class AuthController {
 
             if (target != null) {
                 users.recordSuccess(target.id());
+                audit.recordLogin(target.id(), target.username(), true, null, clientIp(request));
             }
             log.info("用户登录：{}", req.username());
             return AuthResponse.of(users.findByUsernameOrEmail(req.username()).orElseThrow());
 
         } catch (LockedException e) {
+            // 走到这里说明「查库时还没锁、认证时才锁上」，是个窄窗口，但仍要记下来
+            audit.recordLogin(target == null ? null : target.id(), req.username(),
+                    false, "账号已锁定", clientIp(request));
             throw new AccountLockedException(
                     "尝试次数太多了，请 " + props.auth().lockMinutes() + " 分钟后再试");
+        } catch (org.springframework.security.authentication.DisabledException e) {
+            // 正常路径已经提前拦掉了（见上面的 isDisabled 判断），
+            // 这里是「查完状态和认证之间被人停用」这种并发窗口的兜底。
+            audit.recordLogin(target == null ? null : target.id(), req.username(),
+                    false, "账号已被停用", clientIp(request));
+            throw new InvalidCredentialsException();
         } catch (org.springframework.security.authentication.BadCredentialsException e) {
             if (target != null) {
                 users.recordFailure(target.id(),
@@ -234,6 +266,13 @@ public class AuthController {
                 // 光靠这个时间差就能把真实用户名挨个试出来。
                 burnTime(req.password());
             }
+            /*
+             * 查无此人时 req.username() 就是对方试探的那个标识符——
+             * 审计里要留它：「谁在试什么」比「有人失败了」有用得多。
+             * userId 留空，因为这个人根本不存在。
+             */
+            audit.recordLogin(target == null ? null : target.id(), req.username(),
+                    false, "用户名或密码不对", clientIp(request));
             /*
              * 统一措辞：不告诉对方是用户名不存在还是密码错了。
              * 前者会让撞库的人先筛出一批真实账号。
@@ -250,21 +289,27 @@ public class AuthController {
     /**
      * 取客户端 IP。
      *
-     * <p><b>刻意不信 {@code X-Forwarded-For}。</b>
-     * 那个头是请求方自己写的，可以随便伪造——限流按它来做等于没做
-     * （攻击者每换一个头就是一个新的身份）。
-     * 所以直接用 TCP 连接的地址。
+     * <p><b>这里直接读 {@code getRemoteAddr()}，但那不再等于「TCP 对端地址」。</b>
+     * 曾经它确实等于对端地址，那时「刻意不信 {@code X-Forwarded-For}」是对的：
+     * 那个头由请求方自己写，可以随便伪造，限流按它做等于没做
+     * （攻击者每换一个头就是一个新身份）。
      *
-     * <p><b>但这条在部署到反向代理后面时会失效，而且失效得很安静。</b>
-     * 产品方向是公网多用户，上线必然要过 nginx。到那时 {@code getRemoteAddr()}
-     * 返回的是代理自己的地址，所有人共用一个限流桶——
-     * 一个 IP 打满额度，全体用户被挡在门外，限流器直接变成拒绝服务工具。
-     * 正确做法是在代理层配可信代理列表，由代理把真实地址写进一个受信任的头，
-     * 服务端只读那个头（而不是无脑读客户端传来的值）。
-     * 记在 REQUIREMENTS.md（阶段 5），上代理之前必须先做掉。
+     * <p><b>但上线过了 nginx 之后，裸的 {@code getRemoteAddr()} 会返回代理自己的地址</b>
+     * （{@code 127.0.0.1}），所有人共用一个限流桶——一个 IP 打满额度，全体用户被挡在
+     * 门外，限流器直接变成拒绝服务工具。这个洞现在由
+     * {@code server.forward-headers-strategy: native}（见 application.yml）补上：
+     * Tomcat 的 {@code RemoteIpValve} 会在「直连方命中 {@code internalProxies}
+     * （回环/私网段，nginx 从 {@code 127.0.0.1} 连过来正好命中）」时，把
+     * {@code getRemoteAddr()} 重写成 {@code X-Forwarded-For} 里<b>从右往左第一个
+     * 不可信</b>的地址。阀在下面一层工作，所以这里的方法体不用动。
+     *
+     * <p><b>必须是 {@code native} 不是 {@code framework}。</b>nginx 用的是
+     * {@code $proxy_add_x_forwarded_for}（追加语义，头是「{@code <伪造值>, <真实 IP>}」），
+     * {@code framework}（Spring 的 {@code ForwardedHeaderFilter}）取<b>最左</b>值 =
+     * 拿到伪造值，加一个头就能把限流绕过去。
      */
     private static String clientIp(HttpServletRequest request) {
-        return request == null ? "unknown" : request.getRemoteAddr();
+        return ClientIp.of(request);
     }
 
     /**
@@ -314,6 +359,13 @@ public class AuthController {
         // 同样要先确保会话存在，理由见 login 里的注释
         request.getSession(true);
         request.changeSessionId();
+        /*
+         * target 填自己的 id，和「删链接」那条的 target 填链接 id 是同一个意思——
+         * 都是「这次动作落在哪个对象上」。改密码落在自己身上，所以就是自己。
+         * 不填 null：审计表翻起来时「对象」那一列空着，看不出这条记的是什么。
+         */
+        audit.record(me.id(), me.username(), AuditService.PASSWORD_CHANGE, me.id(),
+                AuditService.RESULT_SUCCESS, null, clientIp(request));
         log.info("用户改了密码：{}", me.username());
     }
 

@@ -67,10 +67,43 @@ public class AnalyzeService {
         this.correctionsFeed = correctionsFeed;
     }
 
-    /** 模型输出彻底不可用（连 JSON 都解析不出来）。 */
+    /**
+     * 模型输出彻底不可用（连 JSON 都解析不出来）。
+     *
+     * <p><b>带上 token 数是刻意的。</b>
+     * 失败的那次调用<b>已经花钱了</b>——重试用尽、或者模型连续返回非法 JSON，
+     * 都是真金白银烧完才失败的。要是不把用量带出来，调用方只能记一条
+     * 「失败了」而记不下花了多少，于是账上最短的那一截恰恰是最贵的那一截。
+     * （R-15：AI 花销要入账，含失败。）
+     */
     public static class AnalysisFailedException extends RuntimeException {
+        private final int attempts;
+        private final int promptTokens;
+        private final int completionTokens;
+
         public AnalysisFailedException(String message) {
+            this(message, 0, 0, 0);
+        }
+
+        public AnalysisFailedException(String message, int attempts,
+                                       int promptTokens, int completionTokens) {
             super(message);
+            this.attempts = attempts;
+            this.promptTokens = promptTokens;
+            this.completionTokens = completionTokens;
+        }
+
+        /** 失败前一共调了几次模型。 */
+        public int attempts() {
+            return attempts;
+        }
+
+        public int promptTokens() {
+            return promptTokens;
+        }
+
+        public int completionTokens() {
+            return completionTokens;
         }
     }
 
@@ -166,7 +199,8 @@ public class AnalyzeService {
                 if (e instanceof InterruptedException) {
                     Thread.currentThread().interrupt();
                 }
-                throw new AnalysisFailedException("调用 AI 失败：" + e.getMessage());
+                throw new AnalysisFailedException("调用 AI 失败：" + e.getMessage(),
+                        attempt + 1, promptTokens, completionTokens);
             }
 
             promptTokens += r.promptTokens();
@@ -217,7 +251,8 @@ public class AnalyzeService {
         }
 
         // 循环理论上不会走到这（最后一次必定 return 或 throw）
-        throw new AnalysisFailedException("分析未能产出结果：" + String.join("；", lastErrors));
+        throw new AnalysisFailedException("分析未能产出结果：" + String.join("；", lastErrors),
+                maxRepair + 1, promptTokens, completionTokens);
     }
 
     private AnalyzeOutcome build(JsonNode o,

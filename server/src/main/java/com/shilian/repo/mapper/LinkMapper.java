@@ -271,4 +271,78 @@ public interface LinkMapper extends BaseMapper<LinkEntity> {
     /** 把没有主人的历史数据划给某个用户。只在「第一个账号」时调。 */
     @Update("UPDATE link SET user_id = #{userId} WHERE user_id IS NULL")
     int claimOrphans(@Param("userId") String userId);
+
+    /* ────────────── 标签管理 ────────────── */
+
+    /**
+     * 标签管理用的一行。
+     *
+     * <p><b>只取 id 和 tags 两列</b>：标签管理是跨行读改写，要碰到的行数等于
+     * 这个用户的全部链接。把 {@code snapshot_text}（MEDIUMTEXT，一条可能上百 KB）
+     * 一起捞回来，几百条就是几十 MB 白白过一遍内存，而它在这次操作里毫无用处。
+     *
+     * <p><b>{@code tags} 按原始字符串取，不走 {@code JsonListTypeHandler}</b>：
+     * 这里要的是「改完再整体写回」，解析交给仓储层，
+     * Mapper 不需要知道一个标签长什么样。
+     */
+    record TagRow(String id, String tags) {}
+
+    @Select("SELECT id, tags FROM link WHERE user_id = #{uid}")
+    @ConstructorArgs({
+            @Arg(column = "id", javaType = String.class),
+            @Arg(column = "tags", javaType = String.class)
+    })
+    List<TagRow> tagRows(@Param("uid") String uid);
+
+    /**
+     * 整列覆盖 tags。
+     *
+     * <p>用独立语句而不是 {@code patchForUser}：那个方法是给「前端逐字段改」
+     * 准备的通用通道，而这里是一次批量操作，
+     * 「写哪些列」应该在 SQL 里写死，不该由调用方传 map 决定。
+     *
+     * <p>{@code user_id} 仍然在 WHERE 里：没有它，一次越权的标签管理
+     * 会改到别人的记录上。
+     */
+    @Update("UPDATE link SET tags = #{tags}, updated_at = #{updatedAt} "
+            + "WHERE id = #{id} AND user_id = #{uid}")
+    int updateTags(@Param("id") String id, @Param("uid") String uid,
+                   @Param("tags") String tags, @Param("updatedAt") String updatedAt);
+
+    /* ────────────── 导出 ────────────── */
+
+    /**
+     * 导出用的列表。
+     *
+     * <p>刻意<b>不含</b> {@code snapshot_text} / {@code ai_raw}：
+     * 导出的形状是 {@code LinkItem}，本来就不带这两列，
+     * 而它们是全表最大的两列（正文快照、AI 原始输出）。
+     * 拉回来又不用，几百条时就是几十 MB 的白跑。
+     */
+    @Select("SELECT id, url, domain, title, summary_short, summary_long, note, note_options, "
+            + "domain_category, purpose_categories, tags, content_type, confidence, "
+            + "needs_review, status, starred, created_at, updated_at, last_opened_at "
+            + "FROM link WHERE user_id = #{uid} ORDER BY created_at DESC")
+    List<LinkEntity> selectForExport(@Param("uid") String uid);
+
+    /* ────────────── 管理端 ────────────── */
+
+    /**
+     * 每个用户各有多少条链接。
+     *
+     * <p>这条查询<b>不按当前用户过滤</b>，是给管理端看的。
+     * 它不是数据隔离的口子——调用方（{@code AdminController}）先验证过管理员身份，
+     * 而且返回的是聚合数字，不含任何一条链接的内容。
+     * 仍要写在这里说清楚：看到「不带 user_id 的 link 查询」时，这里是唯一正当的那条。
+     */
+    @Select("SELECT user_id AS uid, COUNT(*) AS n FROM link WHERE user_id IS NOT NULL "
+            + "GROUP BY user_id")
+    @ConstructorArgs({
+            @Arg(column = "uid", javaType = String.class),
+            @Arg(column = "n", javaType = int.class)
+    })
+    List<UserLinkCount> countByUser();
+
+    /** {@link #countByUser} 的一行。 */
+    record UserLinkCount(String userId, int count) {}
 }

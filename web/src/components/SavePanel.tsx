@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   X, Check, Loader2, Globe, FileText, Sparkles, Plus, AlertTriangle,
-  RotateCcw, WifiOff, ClipboardPaste,
+  RotateCcw, WifiOff, ClipboardPaste, Link2,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import {
   DOMAINS, PURPOSES, domainOf, deep, tint,
   type DomainKey, type PurposeKey, type LinkItem, type AnalyzeDraft,
 } from "../types";
-import { ApiError, analyze, saveLink, reanalyzeLink, applyReanalysis, patchLink } from "../api";
+import {
+  ApiError, analyze, saveLink, quickSave, reanalyzeLink, applyReanalysis, patchLink,
+} from "../api";
 
 const STEPS = [
   { icon: Globe, label: "抓取网页" },
@@ -61,6 +63,18 @@ interface Props {
   onClose: () => void;
   /** mode 由面板告诉 App：新建要插到最前，另外两种都是就地替换。 */
   onSave: (item: LinkItem, mode: PanelMode) => void;
+  /**
+   * 保存撞到 409（这个网址已经存过）时，带着**那条已有记录的 id** 调它。
+   * App 收到后关抽屉、清筛选、把列表滚到那一条并高亮。
+   */
+  onGotoExisting: (id: string) => void;
+  /**
+   * 「先存网址，不分析」成功后回调。单独一个 handler 而不是复用 onSave：
+   * quick 存下来的是一条全新的「待补」记录，它不经过草稿审核、也不替换任何东西，
+   * 和 onSave 的三种 mode（new/fix/edit）没有一处共享逻辑。硬塞进 mode 会让
+   * onSave 里多一个只走两行的分支，反而更难读。
+   */
+  onQuickSaved: (item: LinkItem) => void;
   onNotify: (msg: string, kind?: "ok" | "warn") => void;
 }
 
@@ -108,7 +122,7 @@ function draftFromLink(link: LinkItem): AnalyzeDraft {
 }
 
 export default function SavePanel({
-  open, url, fixLink, editLink, onClose, onSave, onNotify,
+  open, url, fixLink, editLink, onClose, onSave, onGotoExisting, onQuickSaved, onNotify,
 }: Props) {
   const [phase, setPhase] = useState<Phase>("analyzing");
   const [step, setStep] = useState(0);
@@ -118,7 +132,16 @@ export default function SavePanel({
   const [error, setError] = useState<string | null>(null);
   const [errorOffline, setErrorOffline] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  /**
+   * 保存撞 409 时后端给的那条已有记录的 id。
+   *
+   * 单独存下来是为了给「去看看那条」按钮一个去处——只显示一句「已经存过了」，
+   * 用户仍然不知道指的是哪一条、当初给这条写过什么，几百条时等于翻不到。
+   */
+  const [existingId, setExistingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  /** 「先存网址，不分析」正在请求中 */
+  const [quickSaving, setQuickSaving] = useState(false);
 
   const [title, setTitle] = useState("");
   const [summary, setSummary] = useState("");
@@ -202,6 +225,9 @@ export default function SavePanel({
     setUsingPaste(false);
     setPasteText("");
     setPasteOpen(false);
+    // 上一次「先存网址」若把面板关了，按钮的 loading 态要一起归零，
+    // 否则重新打开时会看到一个卡在「存一下…」的按钮。
+    setQuickSaving(false);
     // 补正文模式：先让用户选正文从哪来，不要一打开就花掉一次调用
     setChoosing(fixId !== null);
     // 依赖里放 fixId 而不是 fixLink 对象：App 每次改动都会重建 links 数组，
@@ -312,6 +338,7 @@ export default function SavePanel({
       setError(null);
       setErrorOffline(false);
       setSaveError(null);
+      setExistingId(null);
       setTitle(d0.title);
       setSummary(d0.summary ?? "");
       /*
@@ -340,6 +367,7 @@ export default function SavePanel({
       setError(null);
       setErrorOffline(false);
       setSaveError(null);
+      setExistingId(null);
       return;
     }
 
@@ -353,6 +381,7 @@ export default function SavePanel({
     setError(null);
     setErrorOffline(false);
     setSaveError(null);
+    setExistingId(null);
 
     const startedAt = Date.now();
     const tick = setInterval(
@@ -446,6 +475,7 @@ export default function SavePanel({
     if (!editing && !draftId) return;
     setSaving(true);
     setSaveError(null);
+    setExistingId(null);
 
     /*
      * 编辑模式走 PATCH，不走 /apply。
@@ -506,6 +536,12 @@ export default function SavePanel({
       const err = e as ApiError;
       if (err.status === 409) {
         setSaveError("这个网址已经存过了，不用再存一遍");
+        /*
+         * 把已有记录的 id 存下来，给「去看看那条」按钮一个去处。
+         * 后端 409 的响应体里就带着它（GlobalExceptionHandler 塞的），
+         * api.ts 也已经解析出来了——之前只是没人用它。
+         */
+        setExistingId(err.existingId ?? null);
         onNotify("这个网址已经存过了", "warn");
       } else if (err.status === 410) {
         // 草稿在服务端过期了（进程重启或超过 50 条被挤掉）
@@ -515,6 +551,37 @@ export default function SavePanel({
       }
     } finally {
       setSaving(false);
+    }
+  };
+
+  /**
+   * 「先存网址，不分析」——失败态的兜底出口。
+   *
+   * <p>只在**新收藏**失败时出现（fix 模式下这条记录本来就在库里，再 quick 存一次
+   * 只会撞 409），而且后端连不上时不给（存也存不出去，只会让人白忙）。
+   * 熔断 / 没配 Key / 超时三种失败都走这里——不去分辨是哪种错误，
+   * 因为对用户来说结果一样：AI 这条走不通，但他至少能先把网址留住。
+   */
+  const quickSaveNow = async () => {
+    if (quickSaving) return;
+    setQuickSaving(true);
+    setSaveError(null);
+    setExistingId(null);
+    try {
+      const item = await quickSave(url);
+      onQuickSaved(item);
+    } catch (e) {
+      const err = e as ApiError;
+      if (err.status === 409) {
+        // 已经存过了：同样给「去看看那条」的去处，而不是只丢一句提示
+        setSaveError("这个网址已经存过了，不用再存一遍");
+        setExistingId(err.existingId ?? null);
+        onNotify("这个网址已经存过了", "warn");
+      } else {
+        setSaveError(err.message);
+      }
+    } finally {
+      setQuickSaving(false);
     }
   };
 
@@ -749,6 +816,38 @@ export default function SavePanel({
                     抓不到正文，而你自己的浏览器里明明能读到。
                   </p>
                   {pastePicker("贴一段正文再试一次", "用这段正文分析")}
+                </div>
+              )}
+
+              {/*
+                第三条出口：先存网址，不分析。
+                前两条（重新分析 / 贴正文）都要么还得靠 AI、要么得打字，而他此刻
+                可能只想先把网址留住。用虚线描边 + 次要文字色，视觉层级低于上面那个
+                实线「重新分析」按钮——它是兜底，不是首选。
+                后端连不上时不给：请求都发不出去，点它只会白忙一次。
+                （fix 模式也不给：这条记录本来就在库里，再 quick 存一次只会撞 409。）
+              */}
+              {!fixing && !errorOffline && (
+                <div className="mt-4 border-t border-line pt-3.5">
+                  <button
+                    onClick={() => void quickSaveNow()}
+                    disabled={quickSaving}
+                    className={cn(
+                      "flex items-center gap-1.5 rounded-lg border border-dashed border-line-strong px-3.5 py-[7px] text-[12.5px] text-ink2 transition-colors",
+                      quickSaving ? "cursor-wait opacity-60" : "hover:border-ink hover:text-ink",
+                    )}
+                  >
+                    {quickSaving ? (
+                      <Loader2 size={12} className="animate-spin" />
+                    ) : (
+                      <Link2 size={12} />
+                    )}
+                    {quickSaving ? "存一下…" : "先存网址，不分析"}
+                  </button>
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-ink3">
+                    存下来是「待补」状态，列表里能看到、也随时能补正文。
+                    分类和备注等补上正文重新分析时一起生成。
+                  </p>
                 </div>
               )}
             </div>
@@ -1069,10 +1168,25 @@ export default function SavePanel({
 
         <footer className="border-t border-line px-5 py-3.5">
           {saveError && (
-            <p className="mb-2.5 flex items-start gap-1.5 text-[11.5px] leading-relaxed text-amber-700 dark:text-amber-400">
-              <AlertTriangle size={11.5} className="mt-[2px] shrink-0" />
-              {saveError}
-            </p>
+            <div className="mb-2.5 flex items-start gap-2">
+              <p className="flex flex-1 items-start gap-1.5 text-[11.5px] leading-relaxed text-amber-700 dark:text-amber-400">
+                <AlertTriangle size={11.5} className="mt-[2px] shrink-0" />
+                {saveError}
+              </p>
+              {/*
+                409 的出路：不只告诉用户「存过了」，还带他去看那条。
+                没有这个按钮，「已经存过了」就是一句死胡同——他不知道指的是哪条，
+                更看不到当初给这条写过什么备注。
+              */}
+              {existingId && (
+                <button
+                  onClick={() => onGotoExisting(existingId)}
+                  className="shrink-0 rounded-md border border-line px-2 py-[3px] text-[11.5px] text-ink2 transition-colors hover:border-line-strong hover:text-ink"
+                >
+                  去看看那条
+                </button>
+              )}
+            </div>
           )}
           <div className="flex items-center gap-2.5">
             <button
