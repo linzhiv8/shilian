@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   Loader2, ExternalLink, Star, Check, Trash2, RefreshCw,
-  Clock3, PartyPopper, AlertTriangle, ArrowLeft, ClipboardPaste,
+  Clock3, PartyPopper, AlertTriangle, ArrowLeft, ClipboardPaste, CheckCheck,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { domainOf, deep, type LinkItem } from "../types";
@@ -14,6 +14,14 @@ interface Props {
   onDelete: (id: string) => void;
   /** 标记「看过了」，之后不再推给用户 */
   onMarkRead: (id: string) => void;
+  /**
+   * 标记「用上了」。和 onMarkRead 是两件事：那是「别再推」，这是「我真的用上了」。
+   *
+   * <p>这个动作以前没法给——「已用」挤在 status 里，点了就撤不回来，
+   * 放在「一次一张、点了就翻走」的回顾里风险太大。
+   * used 拆成独立列之后它随时能拨回去，才敢放进这一排。
+   */
+  onMarkUsed: (id: string) => void;
   /** 就地补正文：打开同一个抽屉的「补正文」模式，补完回到这里而不是列表 */
   onFix: (item: LinkItem) => void;
   /**
@@ -45,7 +53,7 @@ interface Props {
  * 处理过了（看过了）、不想要（删掉）。每一个都会让它离开队列。
  */
 export default function ReviewView({
-  onOpen, onToggleStar, onDelete, onMarkRead, onFix, fixedItem, onExit, notify,
+  onOpen, onToggleStar, onDelete, onMarkRead, onMarkUsed, onFix, fixedItem, onExit, notify,
 }: Props) {
   const [items, setItems] = useState<LinkItem[]>([]);
   const [dueTotal, setDueTotal] = useState(0);
@@ -306,7 +314,7 @@ export default function ReviewView({
           打开看看
         </button>
 
-        <div className="mt-2.5 grid grid-cols-3 gap-2">
+        <div className="mt-2.5 grid grid-cols-4 gap-2">
           <ActionButton
             icon={<Star size={12.5} />}
             label="留下"
@@ -320,6 +328,12 @@ export default function ReviewView({
             onClick={() => act("已标为看过", (i) => onMarkRead(i.id))}
           />
           <ActionButton
+            icon={<CheckCheck size={12.5} />}
+            label="用上了"
+            hint="标为已用，可撤销"
+            onClick={() => act("已标为用上", (i) => onMarkUsed(i.id))}
+          />
+          <ActionButton
             icon={<Trash2 size={12.5} />}
             label="删掉"
             hint="不想要了"
@@ -330,7 +344,7 @@ export default function ReviewView({
       </div>
 
       <p className="mt-3.5 text-center text-[11px] leading-relaxed text-ink3">
-        四个动作都会让这条离开队列。只「打开看看」的话，
+        这几个动作都会让这条离开队列。只「打开看看」的话，
         {REVIEW_DAYS} 天后它还会回来。
       </p>
     </Shell>

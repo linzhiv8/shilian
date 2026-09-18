@@ -565,6 +565,26 @@ export default function App() {
     }
   };
 
+  /**
+   * 标「用上了」。
+   *
+   * <p>和「看过了」是两种表态，别混：看过了是「别再推给我」，
+   * 用上了是「我真的用上了」。以前这两件事挤在 status 一个字段里，
+   * 于是标了已用就撤不回来——现在 used 是独立列，随手能拨回去
+   * （在编辑面板里，见 SavePanel 那个开关）。
+   */
+  const handleMarkUsed = async (id: string) => {
+    const backup = links;
+    setLinks((prev) => prev.map((l) => (l.id === id ? { ...l, used: true } : l)));
+    try {
+      await patchLink(id, { used: true });
+      void refreshReviewCount();
+    } catch (e) {
+      setLinks(backup);
+      notify((e as ApiError).message, "warn");
+    }
+  };
+
   const togglePurpose = (k: PurposeKey) => {
     setActivePurposes((prev) =>
       prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k],
@@ -866,6 +886,7 @@ export default function App() {
               onToggleStar={toggleStar}
               onDelete={handleDelete}
               onMarkRead={handleMarkRead}
+              onMarkUsed={handleMarkUsed}
               onFix={openFix}
               fixedItem={reviewFixed}
               onExit={exitToList}
