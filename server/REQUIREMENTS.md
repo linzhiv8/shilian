@@ -168,7 +168,7 @@
 
 ---
 
-## 8. 实施状态与已知缺口（2026-09-18 更新）
+## 8. 实施状态与已知缺口（2026-09-19 更新）
 
 ### 已完成
 
@@ -187,11 +187,15 @@
 | 2 可观测 | traceId 过滤器（跑在安全链之前）+ 日志带 traceId + 分析链路分段耗时 + `/api/health` 报熔断与并发 |
 | 修复 · 启动自检 | `StartupSelfCheck`：启动时打印工作目录 / JDBC URL（密码脱敏）/ 数据库实际报出的库名 / schema 版本与数据量 / AI 配置 / 抓取代理。**整体 try-catch 兜底**——诊断组件不该让服务起不来 |
 | 修复 · 连不上库要能自己看懂 | `DatabaseUnreachableFailureAnalyzer`：启动阶段连不上 MySQL 时，用「实际连接串 + 根因 + 是哪一层 + 先跑什么 + 配置在哪」替代 60 行 Spring 堆栈。**为什么不能靠 `StartupSelfCheck`**：它是 `ApplicationRunner`，跑在容器刷新**之后**，而库是在刷新**过程中**（`Migrations` 的 `@PostConstruct`）就连的，所以那条路径上它一行都不会执行 |
-| 6 用量 + 管理端 + 审计（2026-09-18 晚） | **V2 迁移**：`app_user.role`（`user`/`admin`）+ `audit_log` 表。版本号是 **2 不是 4**——迭代需求按批次排到了 V4，但批次 3/4 未做、库里此前只有 V1，跳号会把后来的 V3/V4 静默跳过 |
+| 6 用量 + 管理端 + 审计（2026-09-18 晚） | **V2 迁移**：`app_user.role`（`user`/`admin`）+ `audit_log` 表。版本号是 **2 不是 4**——迭代需求按「批次 3 做 V2、批次 4 做 V3」排的，但这批先做，当时库里只有 V1，跳号会把后来的版本静默跳过。<br>**⚠ 迁移编号不再对应文档里的批次**：实际落地顺序是 **V2 = admin（批次 6）、V3 = email（批次 4）、V4 = review（批次 3）**。看编号别去对文档里的批次号，看 `Migrations` 里注册的 `name` |
 | 同上 · R-15 花销入账 | `AiUsageRecorder` 把入账点**前移**到 `/api/analyze` 和 `/{id}/reanalyze`（含失败，token 由 `AnalysisFailedException` 带出）；保存 / 应用**不再重复记**。这样「反复重跑、最后没保存」这条最浪费的路径不再隐形 |
 | 同上 · R-05 / R-07 | `GET /api/tags`（标签 + 条数）、`POST /api/tags/{rename,merge,delete}`（跨行读改写，必须走服务端）；`GET /api/export?format=json|html`（JSON 无损 + 可导入 Chrome/Edge 的书签 HTML，按领域分目录） |
 | 同上 · R-19 / R-20 | `GET/PATCH /api/admin/users`、`GET /api/admin/audit`，**非管理员一律 404 不是 403**；审计七个动作（`LOGIN_OK`/`LOGIN_FAIL`/`PASSWORD_CHANGE`/`LINK_DELETE`/`ADMIN_DISABLE`/`ADMIN_ENABLE`/`ADMIN_ACCESS_DENIED`）埋在登录、改密、删链接、禁用恢复、越权六处 |
 | 同上 · R-17 禁用生效 | 登录时校验（响应与「用户名或密码不对」**一字不差** + 空转一次 bcrypt 防时间差）+ `DisabledUserFilter` 每请求查一次状态（**不缓存**，停用必须立刻生效）。`/api/auth/me` 增发 `role`，前端据此决定是否显示管理端入口——它只是展示标记，不是权限判据 |
+| 4 账号安全 · R-08 / R-18 / V3（2026-09-19 凌晨） | **V3 迁移**：`app_user.email_verified` + `email_token` 表。<br>**R-08 找回密码**：`POST /api/auth/forgot` / `reset`，**两者必须匿名可访问**——走这条路径的人恰恰是登不进去的那个。令牌存 **SHA-256 哈希**不存明文（库泄露 ≠ 能重置任何人的密码）；30 分钟过期、用后即废，且改完密码把该账号名下**所有**未用的重置令牌一并作废（否则收件箱里那几封旧邮件半小时内还能改他的密码）。<br>**R-18 邮箱验证**：`verify/send` / `verify/confirm`。验证不强制，但**没验证不能自助找回**。<br>**防枚举**：无论邮箱存不存在、验证没验证，响应一字不差；且「发信没配好」这个**全局**判断要放在查邮箱**之前**——反过来写的话「已注册且已验证」会拿 500、其余拿 200，接口就变成一台探测器。<br>**端口锁 465**：阿里云 ECS 封 25 出方向，本地 25 往往又通，走 25 是「本地能发、线上发不出」，只有超时没有报错 |
+| 3 回顾收口 · R-03 / R-04 / R-13 / V4（2026-09-19 早） | **V4 迁移**：加 `link.used`、删 `link.content_hash`。<br>**R-03「已用」可撤销**：`status` 原来混装三种意思（unread/read/used），「已用」因此撤不回来——取消时不知道回哪个，而库里已经丢了原值。拆出独立列 `used` 后，`status` 只管「看过了没有」。**存量 `status='used'` 落成 `'unread'` 而不是 `'read'`**：排除回顾队列改由 `used=1` 负责，取消已用后它自然回队列；给 `'read'` 的话取消等于什么都没发生。<br>⚠ 判据有**两处**（`LinkMapper.REVIEW_WHERE` 与 `ReviewPolicy`），必须一起改，漏一处就是「侧栏说 5 条、点进去 3 条」。<br>**R-04 就地补正文**：回顾卡片直接给按钮，补完把结果**回塞进当前卡片**、不重抽队列（`draw()` 会把 idx 归零，已处理的卡片会重新冒出来），也不推进下一条。<br>**R-13 移动端**：工程第一处响应式断点，只改回顾 + 顶栏容器 |
+| 3 · 一处偏离迭代需求的判决 | 迭代需求判 `link.is_private` 是死列该删。**没删**——`LinkRepository.insertQuick()` 在写它，而那条路径是活的（`POST /api/links/quick`，前端「跳过 AI 直接存」）。**判死列不能只看有没有人读，写也算在用**；它有真实取值，和 `content_hash`（从未被写过、全表 NULL）不是一回事。<br>核对后确认它确实冗余（语义已被 `needs_review` + `analyze_status` 表达），但删列不可逆而留着只是多一列，故保留并在 `V4__review.sql` 里写明理由。要删是一条 `ALTER` 的事 |
+| 3 顺手接的两截断链 | **`site_name`**：`ExtractService` 抽出了 `og:site_name`，但 `AnalyzeOutcome` 没往下带，`LinkController` 传的是硬编码 `null`，那一列恒空。现在传下去了，显示时 `siteName ?? domain`。<br>**`analyze_status`**：写了没人读，现在经 `LinkItem` 暴露，用来区分两种「待补」——`pending` 是从没分析过（跳过 AI 存的那批），`done` + `needsReview` 才是抓正文失败。补救动作一样但**原因不同**，说错会冤枉前者 |
 | ~~修复 · 路径不依赖工作目录~~ | **已作废（2026-09-18）**：`AppHomeEnvironmentPostProcessor` / `AppPaths` 已删除。那套「自动把库路径纠正到 `server/data/`」是为 SQLite 库文件设计的，换成 MySQL 之后没有本地库文件，纠正机制失去对象。`.env.properties` 的「`./` 和 `./server/` 两个位置都试」保留（那解决的是工作目录问题，和数据库无关） |
 
 **没有自动化测试。** `src/test/` 已删（2026-09-18 上线前清理时删的；中间短暂立起过一套
@@ -290,7 +294,12 @@
    结论：**不需要专项迁移**，也不需要合并冲突行。只做两件小事：在生产库跑一次
    `SHOW FULL COLUMNS FROM app_user LIKE 'email'` 确认 collation；把存量邮箱统一小写一次
    （为展示整齐，并入 V3 顺手做）。限流的 key 本来就自己做了规范化，不受影响。
-5. **邮箱验证 / 重置密码未做**（阶段 6）——依赖待确认项 1（邮件服务）。
+5. ~~**邮箱验证 / 重置密码未做**（阶段 6）~~ **代码已实施（2026-09-19），但还不能真的发信**。
+   接口、`email_token` 表、令牌哈希与过期作废都齐了，**缺的是发信凭据**：
+   `.env.properties` 里 `SPRING_MAIL_USERNAME` / `SPRING_MAIL_PASSWORD`（网易客户端授权码，
+   不是登录密码）还是空的。没配好时 `forgot` 会返回「发信还没配好」——
+   这个提示对所有人一样（否则接口就变成「谁注册过」的探测器）。
+   上线时还要把 `SHILIAN_PUBLIC_URL` 改成真实地址，否则邮件里的链接指向 `127.0.0.1`。
    在此之前，忘了密码没有任何自助途径（原先的救急工具 `tools/user.sh` 已删），
    只能手写 SQL 改 `app_user` 表的密码列，哈希用 `BCryptPasswordEncoder(12)`。
 6. **改密后同设备会话继续有效**，换的是 sessionId 而不是整个会话，这是防会话固定所需。
