@@ -335,7 +335,7 @@ public class AuthController {
      * 要做到「一处改密码，处处下线」，得维护一份会话登记表
      * （Spring 的 {@code SessionRegistry}），而它只在走框架自带登录过滤器时才被填充——
      * 这里是手动调 {@code authenticate}，那条链路不经过登记。
-     * 补齐要改登录方式或自己维护登记表，记在 REQUIREMENTS.md（阶段 5）。
+     * 补齐要改登录方式或自己维护登记表（尚未做）。
      * 现在的缓解是会话本身有过期时间，而且本机自用场景下设备就一两个。
      *
      * <p>这里换 sessionId 是为了防会话固定：改密码是一次敏感操作，

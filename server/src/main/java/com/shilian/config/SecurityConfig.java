@@ -34,7 +34,7 @@ import org.springframework.security.web.context.SecurityContextHolderFilter;
  * 关掉的直接原因：前端现在完全没有取 XSRF token 并回传的逻辑，
  * 一旦开启，所有 POST 会立刻全部 403，等于把产品打瘫。
  * 缓解：会话 Cookie 走 {@code SameSite=Lax}，现代浏览器跨站 POST 不带它，
- * 已挡掉主要攻击面。彻底修好要前后端一起改，记在 REQUIREMENTS.md 的 C9（阶段 5）。
+ * 已挡掉主要攻击面。彻底修好要前后端一起改（尚未做）。
  */
 @Configuration
 @EnableWebSecurity

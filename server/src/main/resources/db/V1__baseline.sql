@@ -2,8 +2,9 @@
 --
 -- 这份 DDL 既是「新库的初始化」，也是迁移列表里的 V1。
 --
--- ⚠ 建库由人来做，不在这里 —— 见 DEPLOY.md。库必须建成 utf8mb4，
---   否则中文存进去会变成 ???，而且不报错。
+-- ⚠ 建库由人来做，不在这里：
+--   CREATE DATABASE shilian CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+--   库必须建成 utf8mb4，否则中文存进去会变成 ???，而且不报错。
 --
 -- 每张表都显式写了 ENGINE=InnoDB 和字符集，别删：外键**只在 InnoDB 上生效**，
 -- 而 MySQL 对非 InnoDB 表会**静默忽略** FOREIGN KEY（不报错、不警告），

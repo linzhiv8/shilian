@@ -12,7 +12,7 @@
 #   （服务器上原本就有的那个）。所以：
 #   - 没有数据库容器、也没有数据卷
 #   - 备份是 mysqldump 的事，不是「拷文件」的事
-#   - 建库要你自己做一次，见 DEPLOY.md
+#   - 建库要你自己做一次：CREATE DATABASE shilian CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 #
 #   为什么不把 MySQL 也放进 compose：复用已有的实例能少维护一个服务、
 #   少一份要单独备份的数据；而且服务器上那个 MySQL 通常已经在做定期备份了。

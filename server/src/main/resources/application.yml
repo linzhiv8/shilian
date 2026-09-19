@@ -5,7 +5,7 @@ server:
   #
   # 后端跑在宿主机 java -jar，nginx 在 Docker 里用 host 网络、经 127.0.0.1:8080
   # 反代。nginx 用的是 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`
-  # （web/nginx.conf）——这是**追加**语义：客户端自己送来的 X-Forwarded-For 原样
+  # ——这是**追加**语义：客户端自己送来的 X-Forwarded-For 原样
   # 保留在前面，nginx 只把真实地址追加在最后，于是这个头长成「<伪造值>, <真实 IP>」。
   #   - framework（Spring 的 ForwardedHeaderFilter）取**最左**值 → 拿到伪造值 →
   #     任何人加一个 `X-Forwarded-For: 1.2.3.4` 就能把限流整个绕过去，根本不用碰 8080。
@@ -27,7 +27,7 @@ server:
   # 同网段任何机器都能伪造 X-Forwarded-For 冒充别人。到那时要么继续只绑回环，
   # 要么把 internal-proxies 显式收窄成 nginx 那一个地址——**别只是改地址就上线**。
   #
-  # 写成占位符是为了让 DEPLOY.md 里那个 SERVER_FORWARD_HEADERS_STRATEGY 真的能绑定。
+  # 写成占位符是为了让部署时注入的 SERVER_FORWARD_HEADERS_STRATEGY 真的能绑定。
   # 大写+下划线的键**只有**在 yml 里有同名 ${} 占位符时才会被读到——.properties 文件
   # 不做「大写 → 点号」的转换，那个转换只对真实环境变量（SystemEnvironmentPropertySource）
   # 生效。写错形式不报错、静默不生效，这个工程在这上面栽过一次（见 server/.env.properties
@@ -152,7 +152,7 @@ shilian:
   # 邮件里那些链接指向哪儿。必须是用户实际打开拾链的那个地址——
   # 写成 127.0.0.1 的话，用户点开邮件里的链接会连到自己电脑上，
   # 而浏览器给的是「无法访问」，他只会以为是链接坏了。
-  # 上线时由 SHILIAN_PUBLIC_URL 覆盖（DEPLOY.md 那套环境变量）。
+  # 上线时由 SHILIAN_PUBLIC_URL 覆盖。
   public-url: ${SHILIAN_PUBLIC_URL:http://127.0.0.1:5178}
   deepseek:
     base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}

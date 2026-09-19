@@ -17,7 +17,7 @@ FROM maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /build
 
 # 先只拷 pom 并拉依赖。这样只要依赖没变，改业务代码不会重新下载整个世界。
-# 国内网络下这一步最慢，必要时给 Maven 配镜像（见 DEPLOY.md）。
+# 国内网络下这一步最慢，必要时给 Maven 配镜像（settings.xml 里加 <mirror>）。
 COPY pom.xml .
 RUN mvn -B -q dependency:go-offline
 
